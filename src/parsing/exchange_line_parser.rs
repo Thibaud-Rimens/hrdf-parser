@@ -33,7 +33,6 @@
 /// File(s) read by the parser:
 /// UMSTEIGL
 use std::{error::Error, str::FromStr};
-use std::sync::Arc;
 use nom::bytes::complete::take;
 use nom::character::complete::space1;
 use nom::combinator::opt;
@@ -52,7 +51,7 @@ use crate::parsing::ParserFnReturn;
 
 pub struct ExchangeTimeLineParser {
     file: String,
-    row_parser: Arc<RowParser>
+    row_parser: RowParser
 }
 
 impl ExchangeTimeLineParser {
@@ -75,9 +74,10 @@ impl ExchangeTimeLineParser {
     }
     pub fn new() -> Self {
         Self {
-            file: "UMSTEIGZ".to_string(),
-            row_parser: Arc::new(RowParser::new(vec![
-                RowDefinition::new(
+            file: "UMSTEIGL".to_string(),
+            row_parser: RowParser::new({
+                let mut rows = vec![];
+                rows.push(RowDefinition::new(
                     0,
                     vec![
                         ColumnDefinition::new(ExpectedType::OptionInteger32),
@@ -93,28 +93,10 @@ impl ExchangeTimeLineParser {
                         ColumnDefinition::new(ExpectedType::String),
                     ],
                     Self::get_parser_1
-                )
-            ]))
-        }
-    }
-
-    fn row_converter(
-        &self,
-        parser: FileParser,
-        transport_types_pk_type_converter: &FxHashMap<String, i32>,
-    ) -> Result<FxHashMap<i32, ExchangeTimeLine>, Box<dyn Error>> {
-        let auto_increment = AutoIncrement::new();
-
-        let data = parser
-            .parse()
-            .map(|x| {
-                x.and_then(|(_, _, values)| {
-                    self.create_instance(values, &auto_increment, transport_types_pk_type_converter)
-                })
+                ));
+                rows
             })
-            .collect::<Result<Vec<_>, _>>()?;
-        let data = ExchangeTimeLine::vec_to_map(data);
-        Ok(data)
+        }
     }
 
     fn parse(
@@ -123,90 +105,102 @@ impl ExchangeTimeLineParser {
         transport_types_pk_type_converter: &FxHashMap<String, i32>,
     ) -> Result<ResourceStorage<ExchangeTimeLine>, Box<dyn Error>> {
         log::info!("Parsing {}...", self.file);
-        let parser = FileParser::new(&format!("{}/{}", path, self.file), Arc::clone(&self.row_parser))?;
-        let data = self.row_converter(parser, transport_types_pk_type_converter)?;
+        let parser = FileParser::new(&format!("{}/{}", path, self.file), self.row_parser.clone())?;
+        let data = row_converter(parser, transport_types_pk_type_converter)?;
         Ok(ResourceStorage::new(data))
     }
+}
 
-    // ------------------------------------------------------------------------------------------------
-    // --- Data Processing Functions
-    // ------------------------------------------------------------------------------------------------
+fn row_converter(
+    parser: FileParser,
+    transport_types_pk_type_converter: &FxHashMap<String, i32>,
+) -> Result<FxHashMap<i32, ExchangeTimeLine>, Box<dyn Error>> {
+    let auto_increment = AutoIncrement::new();
 
-    fn create_instance(
-        &self,
-        mut values: Vec<ParsedValue>,
-        auto_increment: &AutoIncrement,
-        transport_types_pk_type_converter: &FxHashMap<String, i32>,
-    ) -> Result<ExchangeTimeLine, Box<dyn Error>> {
-        let stop_id: Option<i32> = values.remove(0).into();
-        let administration_1: String = values.remove(0).into();
-        let transport_type_id_1: String = values.remove(0).into();
-        let line_id_1: String = values.remove(0).into();
-        let direction_1: String = values.remove(0).into();
-        let administration_2: String = values.remove(0).into();
-        let transport_type_id_2: String = values.remove(0).into();
-        let line_id_2: String = values.remove(0).into();
-        let direction_2: String = values.remove(0).into();
-        let duration: i16 = values.remove(0).into();
-        let is_guaranteed: String = values.remove(0).into();
+    let data = parser
+        .parse()
+        .map(|x| {
+            x.and_then(|(_, _, values)| {
+                create_instance(values, &auto_increment, transport_types_pk_type_converter)
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let data = ExchangeTimeLine::vec_to_map(data);
+    Ok(data)
+}
 
-        let transport_type_id_1 = *transport_types_pk_type_converter
-            .get(&transport_type_id_1)
-            .ok_or("Unknown legacy ID")?;
+fn create_instance(
+    mut values: Vec<ParsedValue>,
+    auto_increment: &AutoIncrement,
+    transport_types_pk_type_converter: &FxHashMap<String, i32>,
+) -> Result<ExchangeTimeLine, Box<dyn Error>> {
+    let stop_id: Option<i32> = values.remove(0).into();
+    let administration_1: String = values.remove(0).into();
+    let transport_type_id_1: String = values.remove(0).into();
+    let line_id_1: String = values.remove(0).into();
+    let direction_1: String = values.remove(0).into();
+    let administration_2: String = values.remove(0).into();
+    let transport_type_id_2: String = values.remove(0).into();
+    let line_id_2: String = values.remove(0).into();
+    let direction_2: String = values.remove(0).into();
+    let duration: i16 = values.remove(0).into();
+    let is_guaranteed: String = values.remove(0).into();
 
-        let line_id_1 = if line_id_1 == "*" {
-            None
-        } else {
-            Some(line_id_1)
-        };
+    let transport_type_id_1 = *transport_types_pk_type_converter
+        .get(&transport_type_id_1)
+        .ok_or("Unknown legacy ID")?;
 
-        let direction_1 = if direction_1 == "*" {
-            None
-        } else {
-            Some(DirectionType::from_str(&direction_1)?)
-        };
+    let line_id_1 = if line_id_1 == "*" {
+        None
+    } else {
+        Some(line_id_1)
+    };
 
-        let transport_type_id_2 = *transport_types_pk_type_converter
-            .get(&transport_type_id_2)
-            .ok_or("Unknown legacy ID")?;
+    let direction_1 = if direction_1 == "*" {
+        None
+    } else {
+        Some(DirectionType::from_str(&direction_1)?)
+    };
 
-        let line_id_2 = if line_id_2 == "*" {
-            None
-        } else {
-            Some(line_id_2)
-        };
+    let transport_type_id_2 = *transport_types_pk_type_converter
+        .get(&transport_type_id_2)
+        .ok_or("Unknown legacy ID")?;
 
-        let direction_2 = if direction_2 == "*" {
-            None
-        } else {
-            Some(DirectionType::from_str(&direction_2)?)
-        };
+    let line_id_2 = if line_id_2 == "*" {
+        None
+    } else {
+        Some(line_id_2)
+    };
 
-        let is_guaranteed = is_guaranteed == "!";
+    let direction_2 = if direction_2 == "*" {
+        None
+    } else {
+        Some(DirectionType::from_str(&direction_2)?)
+    };
 
-        let line_1 = LineInfo::new(
-            administration_1,
-            transport_type_id_1,
-            line_id_1,
-            direction_1,
-        );
-        let line_2 = LineInfo::new(
-            administration_2,
-            transport_type_id_2,
-            line_id_2,
-            direction_2,
-        );
+    let is_guaranteed = is_guaranteed == "!";
 
-        Ok(ExchangeTimeLine::new(
-            auto_increment.next(),
-            stop_id,
-            line_1,
-            line_2,
-            duration,
-            is_guaranteed,
-        ))
-    }
+    let line_1 = LineInfo::new(
+        administration_1,
+        transport_type_id_1,
+        line_id_1,
+        direction_1,
+    );
+    let line_2 = LineInfo::new(
+        administration_2,
+        transport_type_id_2,
+        line_id_2,
+        direction_2,
+    );
 
+    Ok(ExchangeTimeLine::new(
+        auto_increment.next(),
+        stop_id,
+        line_1,
+        line_2,
+        duration,
+        is_guaranteed,
+    ))
 }
 
 pub fn parse(
@@ -369,7 +363,7 @@ mod tests {
         transport_types_pk_type_converter.insert("RE".to_string(), 4);
         transport_types_pk_type_converter.insert("T".to_string(), 5);
 
-        let data = exchange_time_line_parser.row_converter(parser, &transport_types_pk_type_converter).unwrap();
+        let data = row_converter(parser, &transport_types_pk_type_converter).unwrap();
         // Id 1
         let attribute = data.get(&1).unwrap();
         let reference = r#"

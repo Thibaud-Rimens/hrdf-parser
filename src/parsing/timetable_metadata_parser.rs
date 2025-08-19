@@ -2,7 +2,6 @@
 // File(s) read by the parser:
 // ECKDATEN
 use std::error::Error;
-use std::sync::Arc;
 use chrono::NaiveDate;
 use nom::bytes::complete::take;
 use nom::character::complete::char;
@@ -34,7 +33,7 @@ impl TryFrom<i32> for RowType {
 
 pub struct TimetableMetadataParser {
     file: String,
-    row_parser: Arc<RowParser>
+    row_parser: RowParser
 }
 
 impl TimetableMetadataParser {
@@ -57,7 +56,7 @@ impl TimetableMetadataParser {
     pub fn new() -> Self {
         Self {
             file: "ECKDATEN".to_string(),
-            row_parser: Arc::new(RowParser::new( {
+            row_parser: RowParser::new( {
                 let mut rows = vec![];
                 rows.push(RowDefinition::new(
                     RowType::RowA as i32,
@@ -78,59 +77,58 @@ impl TimetableMetadataParser {
                     Self::get_parser_2
                 ));
                 rows
-            }))
+            })
         }
-    }
-
-    fn row_converter(&self, parser: FileParser) -> Result<FxHashMap<i32, TimetableMetadataEntry>, Box<dyn Error>>{
-        let auto_increment = AutoIncrement::new();
-        let data: Vec<ParsedValue> = parser
-            .parse()
-            .map(|x| x.map(|(_, _, mut values)| values.remove(0)))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let data = self.create_instance(data, &auto_increment);
-        let data = TimetableMetadataEntry::vec_to_map(data?);
-        Ok(data)
     }
 
     fn parse(&self, path: &str, ) -> Result<ResourceStorage<TimetableMetadataEntry>, Box<dyn Error>> {
         log::info!("Parsing {}...", self.file);
-        let parser = FileParser::new(&format!("{}/{}", path, self.file), Arc::clone(&self.row_parser))?;
-        let data = self.row_converter(parser)?;
+        let parser = FileParser::new(&format!("{}/{}", path, self.file), self.row_parser.clone())?;
+        let data = row_converter(parser)?;
         Ok(ResourceStorage::new(data))
     }
+}
 
-    fn create_instance(
-        &self,
-        mut values: Vec<ParsedValue>,
-        auto_increment: &AutoIncrement,
-    ) -> Result<Vec<TimetableMetadataEntry>, Box<dyn Error>> {
-        let start_date: String = values.remove(0).into();
-        let end_date: String = values.remove(0).into();
-        let other_data: String = values.remove(0).into();
+fn row_converter(parser: FileParser) -> Result<FxHashMap<i32, TimetableMetadataEntry>, Box<dyn Error>>{
+    let auto_increment = AutoIncrement::new();
+    let data: Vec<ParsedValue> = parser
+        .parse()
+        .map(|x| x.map(|(_, _, mut values)| values.remove(0)))
+        .collect::<Result<Vec<_>, _>>()?;
 
-        let start_date = NaiveDate::parse_from_str(&start_date, "%d.%m.%Y")?;
-        let end_date = NaiveDate::parse_from_str(&end_date, "%d.%m.%Y")?;
-        let other_data: Vec<String> = other_data.split('$').map(String::from).collect();
+    let data = create_instance(data, &auto_increment);
+    let data = TimetableMetadataEntry::vec_to_map(data?);
+    Ok(data)
+}
 
-        let rows = vec![
-            ("start_date", start_date.to_string()),
-            ("end_date", end_date.to_string()),
-            ("name", other_data[0].to_owned()),
-            ("created_at", other_data[1].to_owned()),
-            ("version", other_data[2].to_owned()),
-            ("provider", other_data[3].to_owned()),
-        ];
+fn create_instance(
+    mut values: Vec<ParsedValue>,
+    auto_increment: &AutoIncrement,
+) -> Result<Vec<TimetableMetadataEntry>, Box<dyn Error>> {
+    let start_date: String = values.remove(0).into();
+    let end_date: String = values.remove(0).into();
+    let other_data: String = values.remove(0).into();
 
-        let data: Vec<TimetableMetadataEntry> = rows.iter()
-            .map(|(key, value)| {
-                TimetableMetadataEntry::new(auto_increment.next(), key.to_string(), value.to_owned())
-            })
-            .collect();
+    let start_date = NaiveDate::parse_from_str(&start_date, "%d.%m.%Y")?;
+    let end_date = NaiveDate::parse_from_str(&end_date, "%d.%m.%Y")?;
+    let other_data: Vec<String> = other_data.split('$').map(String::from).collect();
 
-        Ok(data)
-    }
+    let rows = vec![
+        ("start_date", start_date.to_string()),
+        ("end_date", end_date.to_string()),
+        ("name", other_data[0].to_owned()),
+        ("created_at", other_data[1].to_owned()),
+        ("version", other_data[2].to_owned()),
+        ("provider", other_data[3].to_owned()),
+    ];
+
+    let data: Vec<TimetableMetadataEntry> = rows.iter()
+        .map(|(key, value)| {
+            TimetableMetadataEntry::new(auto_increment.next(), key.to_string(), value.to_owned())
+        })
+        .collect();
+
+    Ok(data)
 }
 
 pub fn parse(path: &str) -> Result<ResourceStorage<TimetableMetadataEntry>, Box<dyn Error>> {

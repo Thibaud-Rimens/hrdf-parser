@@ -47,13 +47,11 @@
 /// ATTRIBUT_DE, ATTRIBUT_EN, ATTRIBUT_FR, ATTRIBUT_IT
 /// These files were suppressed in 2.0.7
 use std::{error::Error, str::FromStr};
-use std::sync::Arc;
-use nom::bytes::complete::{tag, take, take_till};
-use nom::bytes::is_not;
+use nom::bytes::complete::{take, take_till};
 use nom::character::complete::{char, digit1, space1};
 use nom::combinator::{recognize, rest};
 use nom::Parser;
-use nom::sequence::{delimited, preceded};
+use nom::sequence::{preceded};
 use rustc_hash::FxHashMap;
 
 use crate::{models::{Attribute, Language, Model}, parsing::{
@@ -88,7 +86,7 @@ impl TryFrom<i32> for RowType {
 
 pub struct AttributeParser {
     file: String,
-    row_parser: Arc<RowParser>
+    row_parser: RowParser
 }
 
 impl AttributeParser {
@@ -123,8 +121,9 @@ impl AttributeParser {
     pub fn new() -> Self {
         Self {
             file: "ATTRIBUT".to_string(),
-            row_parser: Arc::new(RowParser::new(vec![
-                RowDefinition::new(
+            row_parser: RowParser::new({
+                let mut rows = vec![];
+                rows.push(RowDefinition::new(
                     RowType::RowA as i32,
                     vec![
                         ColumnDefinition::new(ExpectedType::String),
@@ -133,36 +132,37 @@ impl AttributeParser {
                         ColumnDefinition::new(ExpectedType::Integer16),
                     ],
                     Self::get_parser_1
-                ),
-                RowDefinition::new(
+                ));
+                rows.push(RowDefinition::new(
                     RowType::RowB as i32,
                     vec![
                         ColumnDefinition::new(ExpectedType::String),
                     ],
                     Self::get_parser_2
-                ),
-                RowDefinition::new(
+                ));
+                rows.push(RowDefinition::new(
                     RowType::RowC as i32,
                     vec![
                         ColumnDefinition::new(ExpectedType::String),
                     ],
                     Self::get_parser_3
-                ),
-                RowDefinition::new(
+                ));
+                rows.push(RowDefinition::new(
                     RowType::RowD as i32,
                     vec![
                         ColumnDefinition::new(ExpectedType::String),
                         ColumnDefinition::new(ExpectedType::String)
                     ],
                     Self::get_parser_4
-                )
-            ]))
+                ));
+                rows
+            })
         }
     }
 
     pub fn parse(&self, path: &str) -> Result<AttributeAndTypeConverter, Box<dyn Error>> {
         log::info!("Parsing {}...", self.file);
-        let parser = FileParser::new(&format!("{}/{}", path, self.file), Arc::clone(&self.row_parser))?;
+        let parser = FileParser::new(&format!("{}/{}", path, self.file), self.row_parser.clone())?;
         let (data, pk_type_converter) = row_converter(parser)?;
         Ok((ResourceStorage::new(data), pk_type_converter))
     }
@@ -178,7 +178,7 @@ fn row_converter(
     let mut current_language = Language::default();
 
     for x in parser.parse() {
-        let (id, t, values) = x?;
+        let (id, _, values) = x?;
         match id.try_into() {
             Ok(RowType::RowA) => {
                 let attribute = create_instance(values, &auto_increment, &mut pk_type_converter);
@@ -286,7 +286,6 @@ fn update_current_language(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     // Note this useful idiom: importing names from outer (for mod tests) scope.
     use super::*;
     use crate::parsing::tests::get_json_values;
@@ -384,7 +383,7 @@ mod tests {
         ];
         let attribute_parser = AttributeParser::new();
         let parser = FileParser {
-            row_parser: Arc::clone(&attribute_parser.row_parser),
+            row_parser: attribute_parser.row_parser.clone(),
             rows: rows.clone(),
         };
 

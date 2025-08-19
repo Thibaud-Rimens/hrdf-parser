@@ -2,10 +2,8 @@
 // File(s) read by the parser:
 // METABHF
 use std::error::Error;
-use std::sync::Arc;
 use nom::bytes::complete::{tag, take};
 use nom::character::complete::space1;
-use nom::combinator::rest;
 use nom::Parser;
 use nom::sequence::preceded;
 use rustc_hash::FxHashMap;
@@ -13,7 +11,7 @@ use rustc_hash::FxHashMap;
 use crate::{models::{Model, StopConnection}, parsing::{
     ColumnDefinition, ExpectedType, FileParser,
     ParsedValue, RowDefinition, RowParser,
-}, storage::ResourceStorage, utils::AutoIncrement, Line};
+}, storage::ResourceStorage, utils::AutoIncrement};
 use crate::parsing::ParserFnReturn;
 
 enum RowType {
@@ -36,7 +34,7 @@ impl TryFrom<i32> for RowType {
 
 pub struct StopConnectionParser {
     file: String,
-    row_parser: Arc<RowParser>
+    row_parser: RowParser
 }
 
 impl StopConnectionParser {
@@ -51,7 +49,7 @@ impl StopConnectionParser {
     }
 
     fn get_parser_2(input: &str) -> ParserFnReturn {
-        let mut parser = preceded(tag("#"), preceded(space1, take(2usize)));
+        let mut parser = preceded((tag("*A"), space1), take(2usize));
         let (i2, data) = parser.parse(input)?;
         Ok((i2, vec![data]))
     }
@@ -68,8 +66,9 @@ impl StopConnectionParser {
     pub fn new() -> Self {
         Self {
             file: "METABHF".to_string(),
-            row_parser: Arc::new(RowParser::new(vec![
-                RowDefinition::new(
+            row_parser: RowParser::new({
+                let mut rows = vec![];
+                rows.push(RowDefinition::new(
                     RowType::RowA as i32,
                     vec![
                         ColumnDefinition::new(ExpectedType::Integer32),
@@ -77,53 +76,24 @@ impl StopConnectionParser {
                         ColumnDefinition::new(ExpectedType::Integer16),
                     ],
                     Self::get_parser_1
-                ),
+                ));
                 // This row contains the attributes.
-                RowDefinition::new(
+                rows.push(RowDefinition::new(
                     RowType::RowB as i32,
                     vec![
                         ColumnDefinition::new(ExpectedType::String),
                     ],
                     Self::get_parser_2
-                ),
+                ));
                 // This row is ignored.
-                RowDefinition::new(
+                rows.push(RowDefinition::new(
                     RowType::RowC as i32,
                     vec![],
                     Self::get_parser_3,
-                ),
-            ]))
+                ));
+                rows
+            })
         }
-    }
-
-    fn row_converter(
-        &self,
-        parser: FileParser,
-        attributes_pk_type_converter: &FxHashMap<String, i32>,
-    ) -> Result<FxHashMap<i32, StopConnection>, Box<dyn Error>>  {
-        let auto_increment = AutoIncrement::new();
-        let mut data = Vec::new();
-        for x in parser.parse() {
-            let (id, _, values) = x?;
-            match id.try_into() {
-                Ok(RowType::RowA) => {
-                    if id == RowType::RowA as i32 {
-                        data.push(self.create_instance(values, &auto_increment));
-                    }
-                }
-                _ => {
-                    let stop_connection = data.last_mut().ok_or("Type A row missing.")?;
-                    match id.try_into() {
-                        Ok(RowType::RowB) => set_attribute(values, stop_connection, attributes_pk_type_converter)?,
-                        Ok(RowType::RowC) => {},
-                        _ => unreachable!()
-                    }
-                }
-
-            }
-        }
-        let data = StopConnection::vec_to_map(data);
-        Ok(data)
     }
 
     pub fn parse(
@@ -132,17 +102,46 @@ impl StopConnectionParser {
         attributes_pk_type_converter: &FxHashMap<String, i32>,
     ) -> Result<ResourceStorage<StopConnection>, Box<dyn Error>> {
         log::info!("Parsing {}...", self.file);
-        let parser = FileParser::new(&format!("{}/{}", path, self.file), Arc::clone(&self.row_parser))?;
-        let data = self.row_converter(parser, attributes_pk_type_converter)?;
+        let parser = FileParser::new(&format!("{}/{}", path, self.file), self.row_parser.clone())?;
+        let data = row_converter(parser, attributes_pk_type_converter)?;
         Ok(ResourceStorage::new(data))
     }
+}
 
-    fn create_instance(&self, mut values: Vec<ParsedValue>, auto_increment: &AutoIncrement) -> StopConnection {
-        let stop_id_1: i32 = values.remove(0).into();
-        let stop_id_2: i32 = values.remove(0).into();
-        let duration: i16 = values.remove(0).into();
-        StopConnection::new(auto_increment.next(), stop_id_1, stop_id_2, duration)
+fn row_converter(
+    parser: FileParser,
+    attributes_pk_type_converter: &FxHashMap<String, i32>,
+) -> Result<FxHashMap<i32, StopConnection>, Box<dyn Error>>  {
+    let auto_increment = AutoIncrement::new();
+    let mut data = Vec::new();
+    for x in parser.parse() {
+        let (id, _, values) = x?;
+        match id.try_into() {
+            Ok(RowType::RowA) => {
+                if id == RowType::RowA as i32 {
+                    data.push(create_instance(values, &auto_increment));
+                }
+            }
+            _ => {
+                let stop_connection = data.last_mut().ok_or("Type A row missing.")?;
+                match id.try_into() {
+                    Ok(RowType::RowB) => set_attribute(values, stop_connection, attributes_pk_type_converter)?,
+                    Ok(RowType::RowC) => {},
+                    _ => unreachable!()
+                }
+            }
+
+        }
     }
+    let data = StopConnection::vec_to_map(data);
+    Ok(data)
+}
+
+fn create_instance(mut values: Vec<ParsedValue>, auto_increment: &AutoIncrement) -> StopConnection {
+    let stop_id_1: i32 = values.remove(0).into();
+    let stop_id_2: i32 = values.remove(0).into();
+    let duration: i16 = values.remove(0).into();
+    StopConnection::new(auto_increment.next(), stop_id_1, stop_id_2, duration)
 }
 
 pub fn parse(

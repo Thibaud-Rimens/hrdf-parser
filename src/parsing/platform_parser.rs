@@ -4,10 +4,9 @@
 // ---
 // Note: this parser collects both the Platform and JourneyPlatform resources.
 use std::error::Error;
-use std::sync::Arc;
 use nom::bytes::complete::{tag, take};
-use nom::character::complete::space1;
-use nom::combinator::{opt, rest};
+use nom::character::complete::{char, space1};
+use nom::combinator::{opt, recognize, rest};
 use nom::Parser;
 use nom::sequence::preceded;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -44,7 +43,7 @@ impl TryFrom<i32> for RowType {
 
 pub struct PlatformParser {
     files: Vec<String>,
-    row_parser: Arc<RowParser>
+    row_parser: RowParser
 }
 
 impl PlatformParser {
@@ -53,9 +52,9 @@ impl PlatformParser {
             take(7usize),
             preceded(space1, take(6usize)),
             preceded(space1, take(6usize)),
-            preceded(tag("#"), take(7usize)),
-            preceded(space1, opt(take(4usize))),
-            preceded(space1, opt(take(6usize)))
+            preceded((space1, tag("#")), take(7usize)),
+            preceded(char(' '), opt(take(4usize))),
+            preceded(char(' '), opt(take(6usize)))
         );
         let (i2, data) = parser.parse(input)?;
         Ok((i2, vec![data.0, data.1, data.2, data.3, data.4.unwrap_or(""), data.5.unwrap_or("")]))
@@ -64,8 +63,8 @@ impl PlatformParser {
     fn get_parser_2(input: &str) -> ParserFnReturn {
         let mut parser = (
             take(7usize),
-            preceded(tag("#"), take(7usize)),
-            preceded(tag("G"), preceded(space1, take(6usize))),
+            preceded((space1, tag("#")), take(7usize)),
+            preceded(space1, recognize((tag("G"), rest))),
         );
         let (i2, data) = parser.parse(input)?;
         Ok((i2, vec![data.0, data.1, data.2]))
@@ -74,8 +73,8 @@ impl PlatformParser {
     fn get_parser_3(input: &str) -> ParserFnReturn {
         let mut parser = (
             take(7usize),
-            preceded(tag("#"), take(7usize)),
-            preceded(tag("A"), preceded(space1, take(6usize))),
+            preceded((space1, tag("#")), take(7usize)),
+            preceded(space1, recognize((tag("A"), rest))),
         );
         let (i2, data) = parser.parse(input)?;
         Ok((i2, vec![data.0, data.1, data.2]))
@@ -84,8 +83,8 @@ impl PlatformParser {
     fn get_parser_4_1(input: &str) -> ParserFnReturn {
         let mut parser = (
             take(7usize),
-            preceded(tag("#"), take(7usize)),
-            preceded(tag("g A"), preceded(space1, take(6usize))),
+            preceded((space1, tag("#")), take(7usize)),
+            preceded((space1, tag("g ")), recognize((tag("A"), rest))),
         );
         let (i2, data) = parser.parse(input)?;
         Ok((i2, vec![data.0, data.1, data.2]))
@@ -94,8 +93,8 @@ impl PlatformParser {
     fn get_parser_4_2(input: &str) -> ParserFnReturn {
         let mut parser = (
             take(7usize),
-            preceded(tag("#"), take(7usize)),
-            preceded(tag("I A"), preceded(space1, take(6usize))),
+            preceded((space1, tag("#")), take(7usize)),
+            preceded((space1, tag("I A"), space1), rest),
         );
         let (i2, data) = parser.parse(input)?;
         Ok((i2, vec![data.0, data.1, data.2]))
@@ -104,8 +103,8 @@ impl PlatformParser {
     fn get_parser_5_1(input: &str) -> ParserFnReturn {
         let mut parser = (
             take(7usize),
-            preceded(tag("#"), take(7usize)),
-            preceded(tag("k"), preceded(space1, take(6usize))),
+            preceded((space1, tag("#")), take(7usize)),
+            preceded((space1, tag("k"), space1), rest),
         );
         let (i2, data) = parser.parse(input)?;
         Ok((i2, vec![data.0, data.1, data.2]))
@@ -114,8 +113,8 @@ impl PlatformParser {
     fn get_parser_5_2(input: &str) -> ParserFnReturn {
         let mut parser = (
             take(7usize),
-            preceded(tag("#"), take(7usize)),
-            preceded(tag("K"), preceded(space1, take(6usize))),
+            preceded((space1, tag("#")), take(7usize)),
+            preceded((space1, tag("K"), space1), rest),
         );
         let (i2, data) = parser.parse(input)?;
         Ok((i2, vec![data.0, data.1, data.2]))
@@ -125,7 +124,7 @@ impl PlatformParser {
         Self {
             // Those are not all files but has not enough time updating my structure to handle name and files
             files: vec!["GLEIS".to_string(), "GLEIS_LV95".to_string(), "GLEIS_WGS".to_string(), "GLEISE_LV95".to_string(), "GLEISE_WGS".to_string()],
-            row_parser: Arc::new(RowParser::new({
+            row_parser: RowParser::new({
                 let mut rows: Vec<RowDefinition> = vec![];
                 rows.push(RowDefinition::new(
                     RowType::RowJourneyPlatform as i32,
@@ -195,7 +194,7 @@ impl PlatformParser {
                     }
                 ));
                 rows
-            }))
+            })
         }
     }
 
@@ -215,7 +214,7 @@ impl PlatformParser {
 
         match version {
             Version::V_5_40_41_2_0_4 | Version::V_5_40_41_2_0_5 | Version::V_5_40_41_2_0_6 => {
-                let parser = FileParser::new(&format!("{path}/{}", self.files[0]), Arc::clone(&self.row_parser))?;
+                let parser = FileParser::new(&format!("{path}/{}", self.files[0]), self.row_parser.clone())?;
                 for x in parser.parse() {
                     let (id, bytes_read, values) = x?;
                     match id.try_into() {
@@ -224,7 +223,7 @@ impl PlatformParser {
                             journey_platform.push(values);
                         }
                         Ok(RowType::RowPlatform) => {
-                            platforms.push(Self::create_instance(
+                            platforms.push(create_instance(
                                 values,
                                 &auto_increment,
                                 &mut platforms_pk_type_converter,
@@ -235,7 +234,7 @@ impl PlatformParser {
                 }
             }
             Version::V_5_40_41_2_0_7 => {
-                let parser = FileParser::new(&format!("{path}/{}", self.files[3]), Arc::clone(&self.row_parser))?;
+                let parser = FileParser::new(&format!("{path}/{}", self.files[3]), self.row_parser.clone())?;
                 for x in parser.parse() {
                     let (id, bytes_read, values) = x?;
                     match id.try_into() {
@@ -244,7 +243,7 @@ impl PlatformParser {
                             journey_platform.push(values);
                         }
                         Ok(RowType::RowPlatform)  => {
-                            platforms.push(Self::create_instance(
+                            platforms.push(create_instance(
                                 values,
                                 &auto_increment,
                                 &mut platforms_pk_type_converter,
@@ -268,7 +267,7 @@ impl PlatformParser {
         let journey_platform = journey_platform
             .into_iter()
             .map(|values| {
-                Self::create_journey_instance(
+                create_journey_instance(
                     values,
                     journeys_pk_type_converter,
                     &platforms_pk_type_converter,
@@ -360,58 +359,58 @@ impl PlatformParser {
             }
         }
     }
+}
 
-    fn create_instance(
-        mut values: Vec<ParsedValue>,
-        auto_increment: &AutoIncrement,
-        platforms_pk_type_converter: &mut FxHashMap<(i32, i32), i32>,
-    ) -> Result<Platform, Box<dyn Error>> {
-        let stop_id: i32 = values.remove(0).into();
-        let index: i32 = values.remove(0).into();
-        let platform_data: String = values.remove(0).into();
+fn create_instance(
+    mut values: Vec<ParsedValue>,
+    auto_increment: &AutoIncrement,
+    platforms_pk_type_converter: &mut FxHashMap<(i32, i32), i32>,
+) -> Result<Platform, Box<dyn Error>> {
+    let stop_id: i32 = values.remove(0).into();
+    let index: i32 = values.remove(0).into();
+    let platform_data: String = values.remove(0).into();
 
-        let id = auto_increment.next();
-        let (code, sectors) = parse_platform_data(platform_data)?;
+    let id = auto_increment.next();
+    let (code, sectors) = parse_platform_data(platform_data)?;
 
-        if let Some(previous) = platforms_pk_type_converter.insert((stop_id, index), id) {
-            log::warn!(
+    if let Some(previous) = platforms_pk_type_converter.insert((stop_id, index), id) {
+        log::warn!(
             "Warning: previous id {previous} for ({stop_id}, {index}). The pair (stop_id, index), ({stop_id}, {index}), is not unique."
         );
-        };
+    };
 
-        Ok(Platform::new(id, code, sectors, stop_id))
-    }
+    Ok(Platform::new(id, code, sectors, stop_id))
+}
 
-    fn create_journey_instance(
-        mut values: Vec<ParsedValue>,
-        journeys_pk_type_converter: &FxHashSet<JourneyId>,
-        platforms_pk_type_converter: &FxHashMap<(i32, i32), i32>,
-    ) -> Result<JourneyPlatform, Box<dyn Error>> {
-        let stop_id: i32 = values.remove(0).into();
-        let journey_id: i32 = values.remove(0).into();
-        let administration: String = values.remove(0).into();
-        let index: i32 = values.remove(0).into();
-        let time: Option<i32> = values.remove(0).into();
-        let bit_field_id: Option<i32> = values.remove(0).into();
+fn create_journey_instance(
+    mut values: Vec<ParsedValue>,
+    journeys_pk_type_converter: &FxHashSet<JourneyId>,
+    platforms_pk_type_converter: &FxHashMap<(i32, i32), i32>,
+) -> Result<JourneyPlatform, Box<dyn Error>> {
+    let stop_id: i32 = values.remove(0).into();
+    let journey_id: i32 = values.remove(0).into();
+    let administration: String = values.remove(0).into();
+    let index: i32 = values.remove(0).into();
+    let time: Option<i32> = values.remove(0).into();
+    let bit_field_id: Option<i32> = values.remove(0).into();
 
-        let _journey_id = journeys_pk_type_converter
-            .get(&(journey_id, administration.clone()))
-            .ok_or("Unknown legacy journey ID")?;
+    let _journey_id = journeys_pk_type_converter
+        .get(&(journey_id, administration.clone()))
+        .ok_or("Unknown legacy journey ID")?;
 
-        let platform_id = *platforms_pk_type_converter
-            .get(&(stop_id, index))
-            .ok_or("Unknown legacy platform ID")?;
+    let platform_id = *platforms_pk_type_converter
+        .get(&(stop_id, index))
+        .ok_or("Unknown legacy platform ID")?;
 
-        let time = time.map(|x| create_time_from_value(x as u32));
+    let time = time.map(|x| create_time_from_value(x as u32));
 
-        Ok(JourneyPlatform::new(
-            journey_id,
-            administration,
-            platform_id,
-            time,
-            bit_field_id,
-        ))
-    }
+    Ok(JourneyPlatform::new(
+        journey_id,
+        administration,
+        platform_id,
+        time,
+        bit_field_id,
+    ))
 }
 
 pub fn parse(

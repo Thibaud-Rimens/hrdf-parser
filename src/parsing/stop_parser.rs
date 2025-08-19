@@ -5,7 +5,6 @@
 // Files not used by the parser:
 // BHFART
 use std::{error::Error, vec};
-use std::sync::Arc;
 use nom::bytes::complete::take;
 use nom::character::complete::space1;
 use nom::combinator::rest;
@@ -29,7 +28,7 @@ type StopStorageAndExchangeTimes = (ResourceStorage<Stop>, (i16, i16));
 
 pub struct StopParser {
     file: String,
-    row_parser: Arc<RowParser>
+    row_parser: RowParser
 }
 impl StopParser {
     fn get_parser_1(input: &str) -> ParserFnReturn {
@@ -44,35 +43,25 @@ impl StopParser {
     pub fn new() -> Self {
         Self {
             file: "BAHNHOF".to_string(),
-            row_parser: Arc::new(RowParser::new( {
+            row_parser: RowParser::new( {
                 let mut rows = vec![];
                 rows.push(RowDefinition::new(
                     0,
                     vec![
                         ColumnDefinition::new(ExpectedType::Integer32),
-                        ColumnDefinition::new(ExpectedType::Integer32),
-                        ColumnDefinition::new(ExpectedType::Integer16),
+                        ColumnDefinition::new(ExpectedType::String),
                     ],
                     Self::get_parser_1
                 ));
                 rows
-            }))
+            })
         }
-    }
-
-    fn row_converter(&self, parser: FileParser) -> Result<FxHashMap<i32, Stop>, Box<dyn Error>>{
-        let data = parser
-            .parse()
-            .map(|x| x.map(|(_, _, values)| create_instance(values))?)
-            .collect::<Result<Vec<_>, _>>()?;
-        let data = Stop::vec_to_map(data);
-        Ok(data)
     }
 
     fn parse(&self, version: Version, path: &str) -> Result<StopStorageAndExchangeTimes, Box<dyn Error>> {
         log::info!("Parsing {}...", self.file);
-        let parser = FileParser::new(&format!("{}/{}", path, self.file), Arc::clone(&self.row_parser))?;
-        let mut data = self.row_converter(parser)?;
+        let parser = FileParser::new(&format!("{}/{}", path, self.file), self.row_parser.clone())?;
+        let mut data = row_converter(parser)?;
         load_coordinates(version, path, CoordinateSystem::LV95, &mut data)?;
         load_coordinates(version, path, CoordinateSystem::WGS84, &mut data)?;
         load_exchange_priorities(path, &mut data)?;
@@ -84,13 +73,14 @@ impl StopParser {
     }
 }
 
-pub fn parse(version: Version, path: &str) -> Result<StopStorageAndExchangeTimes, Box<dyn Error>> {
-    StopParser::new().parse(version, path)
+fn row_converter(parser: FileParser) -> Result<FxHashMap<i32, Stop>, Box<dyn Error>>{
+    let data = parser
+        .parse()
+        .map(|x| x.map(|(_, _, values)| create_instance(values))?)
+        .collect::<Result<Vec<_>, _>>()?;
+    let data = Stop::vec_to_map(data);
+    Ok(data)
 }
-
-// ------------------------------------------------------------------------------------------------
-// --- Data Processing Functions
-// ------------------------------------------------------------------------------------------------
 
 fn create_instance(mut values: Vec<ParsedValue>) -> Result<Stop, Box<dyn Error>> {
     let id: i32 = values.remove(0).into();
@@ -99,6 +89,11 @@ fn create_instance(mut values: Vec<ParsedValue>) -> Result<Stop, Box<dyn Error>>
     let (name, long_name, abbreviation, synonyms) = parse_designations(designations)?;
 
     Ok(Stop::new(id, name, long_name, abbreviation, synonyms))
+}
+
+
+pub fn parse(version: Version, path: &str) -> Result<StopStorageAndExchangeTimes, Box<dyn Error>> {
+    StopParser::new().parse(version, path)
 }
 
 // ------------------------------------------------------------------------------------------------

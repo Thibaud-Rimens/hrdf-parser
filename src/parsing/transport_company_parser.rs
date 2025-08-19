@@ -2,8 +2,6 @@
 // File(s) read by the parser:
 // BETRIEB_DE, BETRIEB_EN, BETRIEB_FR, BETRIEB_IT
 use std::error::Error;
-use std::sync::Arc;
-use chrono::NaiveDate;
 use nom::bytes::complete::{tag, take};
 use nom::character::complete::space1;
 use nom::combinator::rest;
@@ -15,9 +13,8 @@ use rustc_hash::FxHashMap;
 use crate::{models::{Language, Model, TransportCompany}, parsing::{
     ColumnDefinition, ExpectedType, FileParser, ParsedValue, RowDefinition,
     RowParser,
-}, storage::ResourceStorage, TimetableMetadataEntry};
+}, storage::ResourceStorage};
 use crate::parsing::ParserFnReturn;
-use crate::utils::AutoIncrement;
 
 enum RowType {
     RowA = 1,
@@ -40,14 +37,14 @@ impl TryFrom<i32> for RowType {
 pub struct TransportCompanyParser {
     files: Vec<String>,
     languages: Vec<Language>,
-    row_parser: Arc<RowParser>
+    row_parser: RowParser
 }
 
 impl TransportCompanyParser {
     fn get_parser_1(input: &str) -> ParserFnReturn {
         let mut parser = (
             take(5usize),
-            preceded(tag("K"), preceded(space1, rest))
+            preceded((space1, tag("K"), space1), rest)
         );
         let (i2, data) = parser.parse(input)?;
         Ok((i2, vec![data.0, data.1]))
@@ -56,26 +53,23 @@ impl TransportCompanyParser {
     fn get_parser_2(input: &str) -> ParserFnReturn {
         let mut parser = (
             take(5usize),
-            preceded(tag(":"), preceded(space1, rest))
+            preceded((space1, tag(":"), space1), rest)
         );
         let (i2, data) = parser.parse(input)?;
         Ok((i2, vec![data.0, data.1]))
     }
 
     fn get_parser_3(input: &str) -> ParserFnReturn {
-        let mut parser = (
-            preceded(take(5usize), tag("N")),
-            preceded(space1, rest)
-        );
+        let mut parser = preceded((take(6usize), tag("N"), space1), rest);
         let (i2, data) = parser.parse(input)?;
-        Ok((i2, vec![data.0, data.1]))
+        Ok((i2, vec![data]))
     }
 
     pub fn new() -> Self {
         Self {
             files: vec!["BETRIEB_DE".to_string(), "BETRIEB_EN".to_string(), "BETRIEB_FR".to_string(), "BETRIEB_IT".to_string()],
             languages: vec![Language::German, Language::English, Language::French, Language::Italian],
-            row_parser: Arc::new(RowParser::new( {
+            row_parser: RowParser::new( {
                 let mut rows = vec![];
                 rows.push(RowDefinition::new(
                     RowType::RowA as i32,
@@ -94,25 +88,15 @@ impl TransportCompanyParser {
                     Self::get_parser_2
                 ));
                 rows.push(RowDefinition::new(
-                    RowType::RowB as i32,
+                    RowType::RowC as i32,
                     vec![
                         ColumnDefinition::new(ExpectedType::String),
                     ],
                     Self::get_parser_3
                 ));
                 rows
-            }))
+            })
         }
-    }
-
-    fn row_converter(&self, parser: FileParser, data: &mut FxHashMap<i32, TransportCompany>, language: Language, ) -> Result<(), Box<dyn Error>> {
-        parser.parse().try_for_each(|x| {
-            let (id, _, values) = x?;
-            if id == RowType::RowA as i32 {
-                set_designations(values, data, language)?
-            }
-            Ok(())
-        })
     }
 
     pub fn parse(&self, path: &str) -> Result<ResourceStorage<TransportCompany>, Box<dyn Error>> {
@@ -120,14 +104,14 @@ impl TransportCompanyParser {
             log::info!("Parsing {}...", file);
         }
 
-        let parser = FileParser::new(&format!("{}/{}", path, self.files[0]), Arc::clone(&self.row_parser))?;
+        let parser = FileParser::new(&format!("{}/{}", path, self.files[0]), self.row_parser.clone())?;
         let data = parser
             .parse()
             .map(|x| {
                 x.map(|(id, _, values)| {
                     match id.try_into() {
                         Ok(RowType::RowA) => None,
-                        Ok(RowType::RowB) => Some(self.create_instance(values)),
+                        Ok(RowType::RowB) => Some(create_instance(values)),
                         Ok(RowType::RowC) => None, // TODO we should probably add an explicit treatment for the sboid
                         _ => unreachable!(),
                     }
@@ -145,14 +129,6 @@ impl TransportCompanyParser {
         Ok(ResourceStorage::new(data))
     }
 
-    fn create_instance(&self, mut values: Vec<ParsedValue>) -> TransportCompany {
-        let id: i32 = values.remove(0).into();
-        let administrations = values.remove(0).into();
-        let administrations = parse_administrations(administrations);
-
-        TransportCompany::new(id, administrations)
-    }
-
     fn load_designations(
         &self,
         path: &str,
@@ -165,7 +141,7 @@ impl TransportCompanyParser {
             Language::French => "BETRIEB_FR",
             Language::Italian => "BETRIEB_IT",
         };
-        let parser = FileParser::new(&format!("{path}/{filename}"), Arc::clone(&self.row_parser))?;
+        let parser = FileParser::new(&format!("{path}/{filename}"), self.row_parser.clone())?;
 
         parser.parse().try_for_each(|x| {
             let (id, _, values) = x?;
@@ -175,6 +151,14 @@ impl TransportCompanyParser {
             Ok(())
         })
     }
+}
+
+fn create_instance(mut values: Vec<ParsedValue>) -> TransportCompany {
+    let id: i32 = values.remove(0).into();
+    let administrations = values.remove(0).into();
+    let administrations = parse_administrations(administrations);
+
+    TransportCompany::new(id, administrations)
 }
 
 pub fn parse(path: &str) -> Result<ResourceStorage<TransportCompany>, Box<dyn Error>> {

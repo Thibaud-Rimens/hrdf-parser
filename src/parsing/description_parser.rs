@@ -1,5 +1,4 @@
 use std::error::Error;
-use std::sync::Arc;
 use nom::bytes::complete::{tag, take};
 use nom::character::complete::space1;
 use nom::combinator::rest;
@@ -35,14 +34,12 @@ impl TryFrom<i32> for RowType {
 
 pub struct DescriptionParser {
     file: String,
-    row_parser: Arc<RowParser>
+    row_parser: RowParser
 }
 
 impl DescriptionParser {
     fn get_parser_1(input: &str) -> ParserFnReturn {
-        let mut parser = (
-            tag("%"),
-        );
+        let mut parser = tag("%");
         let (i2, _) = parser.parse(input)?;
         Ok((i2, vec![]))
     }
@@ -50,7 +47,7 @@ impl DescriptionParser {
     fn get_parser_2(input: &str) -> ParserFnReturn {
         let mut parser = (
             take(7usize),
-            preceded(tag("B"), preceded(space1, take(2usize))),
+            preceded((space1, tag("B"), space1), take(2usize)),
         );
         let (i2, data) = parser.parse(input)?;
         Ok((i2, vec![data.0, data.1]))
@@ -59,7 +56,7 @@ impl DescriptionParser {
     fn get_parser_3(input: &str) -> ParserFnReturn {
         let mut parser = (
             take(7usize),
-            preceded(tag("A"), preceded(space1, rest)),
+            preceded((take(3usize), tag("A"), space1), rest),
         );
         let (i2, data) = parser.parse(input)?;
         Ok((i2, vec![data.0, data.1]))
@@ -68,7 +65,7 @@ impl DescriptionParser {
     fn get_parser_4(input: &str) -> ParserFnReturn {
         let mut parser = (
             take(7usize),
-            preceded(tag("a"), preceded(space1, rest)),
+            preceded((take(3usize), tag("a"), space1), rest),
         );
         let (i2, data) = parser.parse(input)?;
         Ok((i2, vec![data.0, data.1]))
@@ -77,7 +74,7 @@ impl DescriptionParser {
     fn get_parser_5(input: &str) -> ParserFnReturn {
         let mut parser = (
             take(7usize),
-            preceded(tag("L"), preceded(space1, take(2usize))),
+            preceded((space1, tag("L"), space1), take(2usize)),
         );
         let (i2, data) = parser.parse(input)?;
         Ok((i2, vec![data.0, data.1]))
@@ -86,7 +83,7 @@ impl DescriptionParser {
     fn get_parser_6(input: &str) -> ParserFnReturn {
         let mut parser = (
             take(7usize),
-            preceded(tag("I"), preceded(space1, take(2usize))),
+            preceded((space1, tag("I"), space1), take(2usize)),
             preceded(space1, take(9usize))
 
         );
@@ -100,7 +97,7 @@ impl DescriptionParser {
                 Version::V_5_40_41_2_0_4 | Version::V_5_40_41_2_0_5 | Version::V_5_40_41_2_0_6 => "BHFART_60",
                 Version::V_5_40_41_2_0_7 => "BHFART",
             }.to_string(),
-            row_parser: Arc::new(RowParser::new({
+            row_parser: RowParser::new({
                 let mut rows = vec![];
                 rows.push(RowDefinition::new(
                     RowType::RowA as i32,
@@ -149,7 +146,7 @@ impl DescriptionParser {
                     Self::get_parser_6,
                 ));
                 rows
-            }))
+            })
         }
     }
 
@@ -159,7 +156,7 @@ impl DescriptionParser {
         data: &mut FxHashMap<i32, Stop>,
     ) -> Result<(), Box<dyn Error>> {
         log::info!("Parsing {}...", self.file);
-        let parser = FileParser::new(&format!("{}/{}", path, self.file), Arc::clone(&self.row_parser))?;
+        let parser = FileParser::new(&format!("{}/{}", path, self.file), self.row_parser.clone())?;
 
         parser.parse().try_for_each(|x| {
             let (id, _, values) = x?;
@@ -168,12 +165,8 @@ impl DescriptionParser {
                 Ok(RowType::RowB) => set_restrictions(values, data)?,
                 Ok(RowType::RowC) => set_sloid(values, data)?,
                 Ok(RowType::RowD) => add_boarding_area(values, data)?,
-                Ok(RowType::RowE) => {
-                    // TODO: add possibility to use Land data
-                }
-                Ok(RowType::RowF) => {
-                    // TODO: add possibility to use KT information and the associated number
-                }
+                Ok(RowType::RowE) => {} // TODO: add possibility to use Land data
+                Ok(RowType::RowF) => {} // TODO: add possibility to use KT information and the associated number
                 _ => unreachable!(),
             }
             Ok(())

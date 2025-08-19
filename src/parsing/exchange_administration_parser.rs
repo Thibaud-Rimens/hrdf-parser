@@ -23,10 +23,9 @@
 /// File(s) read by the parser:
 /// UMSTEIGV
 use std::error::Error;
-use std::sync::Arc;
 use nom::bytes::complete::take;
 use nom::character::complete::space1;
-use nom::combinator::{opt, rest};
+use nom::combinator::{opt};
 use nom::Parser;
 use nom::sequence::preceded;
 use rustc_hash::FxHashMap;
@@ -42,7 +41,7 @@ use crate::parsing::ParserFnReturn;
 
 pub struct ExchangeTimeAdministrationParser {
     file: String,
-    row_parser: Arc<RowParser>
+    row_parser: RowParser
 }
 
 impl ExchangeTimeAdministrationParser {
@@ -59,7 +58,7 @@ impl ExchangeTimeAdministrationParser {
     pub fn new() -> Self {
         Self {
             file: "UMSTEIGV".to_string(),
-            row_parser: Arc::new(RowParser::new(vec![
+            row_parser: RowParser::new(vec![
                 RowDefinition::new(
                     0,
                     vec![
@@ -70,48 +69,45 @@ impl ExchangeTimeAdministrationParser {
                     ],
                     Self::get_parser_1
                 )
-            ]))
+            ])
         }
-    }
-
-    fn row_converter(
-        &self,
-        parser: FileParser,
-    ) -> Result<FxHashMap<i32, ExchangeTimeAdministration>, Box<dyn Error>> {
-        let auto_increment = AutoIncrement::new();
-
-        let data = parser
-            .parse()
-            .map(|x| x.map(|(_, _, values)| self.create_instance(values, &auto_increment)))
-            .collect::<Result<Vec<_>, _>>()?;
-        let data = ExchangeTimeAdministration::vec_to_map(data);
-        Ok(data)
     }
 
     fn parse(&self, path: &str) -> Result<ResourceStorage<ExchangeTimeAdministration>, Box<dyn Error>> {
         log::info!("Parsing {}...", self.file);
-        let parser = FileParser::new(&format!("{}/{}", path, self.file), Arc::clone(&self.row_parser))?;
-        let data = self.row_converter(parser)?;
+        let parser = FileParser::new(&format!("{}/{}", path, self.file), self.row_parser.clone())?;
+        let data = row_converter(parser)?;
         Ok(ResourceStorage::new(data))
-    }
-
-    fn create_instance(
-        &self,
-        values: Vec<ParsedValue>,
-        auto_increment: &AutoIncrement,
-    ) -> ExchangeTimeAdministration {
-        let (stop_id, administration_1, administration_2, duration) = row_from_parsed_values(values);
-
-        ExchangeTimeAdministration::new(
-            auto_increment.next(),
-            stop_id,
-            administration_1,
-            administration_2,
-            duration,
-        )
     }
 }
 
+fn row_converter(
+    parser: FileParser,
+) -> Result<FxHashMap<i32, ExchangeTimeAdministration>, Box<dyn Error>> {
+    let auto_increment = AutoIncrement::new();
+
+    let data = parser
+        .parse()
+        .map(|x| x.map(|(_, _, values)| create_instance(values, &auto_increment)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let data = ExchangeTimeAdministration::vec_to_map(data);
+    Ok(data)
+}
+
+fn create_instance(
+    values: Vec<ParsedValue>,
+    auto_increment: &AutoIncrement,
+) -> ExchangeTimeAdministration {
+    let (stop_id, administration_1, administration_2, duration) = row_from_parsed_values(values);
+
+    ExchangeTimeAdministration::new(
+        auto_increment.next(),
+        stop_id,
+        administration_1,
+        administration_2,
+        duration,
+    )
+}
 
 pub fn parse(path: &str) -> Result<ResourceStorage<ExchangeTimeAdministration>, Box<dyn Error>> {
     ExchangeTimeAdministrationParser::new().parse(path)
@@ -197,7 +193,7 @@ mod tests {
             row_parser: exchange_time_administration_parser.row_parser.clone(),
             rows,
         };
-        let data = exchange_time_administration_parser.row_converter(parser).unwrap();
+        let data = row_converter(parser).unwrap();
         // First row
         let attribute = data.get(&1).unwrap();
         let reference = r#"

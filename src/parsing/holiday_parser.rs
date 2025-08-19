@@ -13,7 +13,6 @@
 /// File(s) read by the parser:
 /// FEIERTAG
 use std::{error::Error, str::FromStr};
-use std::sync::Arc;
 use chrono::NaiveDate;
 use nom::bytes::complete::take;
 use nom::character::complete::space1;
@@ -32,7 +31,7 @@ use crate::parsing::ParserFnReturn;
 
 pub struct HolidayParser {
     file: String,
-    row_parser: Arc<RowParser>
+    row_parser: RowParser
 }
 
 impl HolidayParser {
@@ -48,53 +47,50 @@ impl HolidayParser {
     pub fn new() -> Self {
         Self {
             file: "FEIERTAG".to_string(),
-            row_parser: Arc::new(RowParser::new(vec![
-                RowDefinition::new(
+            row_parser: RowParser::new({
+                let mut rows = vec![];
+                rows.push(RowDefinition::new(
                     0,
                     vec![
                         ColumnDefinition::new(ExpectedType::String),
                         ColumnDefinition::new(ExpectedType::String),
                     ],
                     Self::get_parser_1
-                )
-            ]))
+                ));
+                rows
+            })
         }
-    }
-
-    fn row_converter(&self, parser: FileParser) -> Result<FxHashMap<i32, Holiday>, Box<dyn Error>> {
-        let auto_increment = AutoIncrement::new();
-
-        let data = parser
-            .parse()
-            .map(|x| x.and_then(|(_, _, values)| self.create_instance(values, &auto_increment)))
-            .collect::<Result<Vec<_>, _>>()?;
-        let data = Holiday::vec_to_map(data);
-        Ok(data)
     }
 
     fn parse(&self, path: &str) -> Result<ResourceStorage<Holiday>, Box<dyn Error>> {
         log::info!("Parsing {}...", self.file);
-        let parser = FileParser::new(&format!("{}/{}", path, self.file), Arc::clone(&self.row_parser))?;
-        let data = self.row_converter(parser)?;
+        let parser = FileParser::new(&format!("{}/{}", path, self.file), self.row_parser.clone())?;
+        let data = row_converter(parser)?;
 
         Ok(ResourceStorage::new(data))
     }
+}
 
-    // ------------------------------------------------------------------------------------------------
-    // --- Data Processing Functions
-    // ------------------------------------------------------------------------------------------------
+fn row_converter(parser: FileParser) -> Result<FxHashMap<i32, Holiday>, Box<dyn Error>> {
+    let auto_increment = AutoIncrement::new();
 
-    fn create_instance(
-        &self,
-        mut values: Vec<ParsedValue>,
-        auto_increment: &AutoIncrement,
-    ) -> Result<Holiday, Box<dyn Error>> {
-        let date: String = values.remove(0).into();
-        let name_translations: String = values.remove(0).into();
-        let date = NaiveDate::parse_from_str(&date, "%d.%m.%Y")?;
-        let name = parse_name_translations(name_translations)?;
-        Ok(Holiday::new(auto_increment.next(), date, name))
-    }
+    let data = parser
+        .parse()
+        .map(|x| x.and_then(|(_, _, values)| create_instance(values, &auto_increment)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let data = Holiday::vec_to_map(data);
+    Ok(data)
+}
+
+fn create_instance(
+    mut values: Vec<ParsedValue>,
+    auto_increment: &AutoIncrement,
+) -> Result<Holiday, Box<dyn Error>> {
+    let date: String = values.remove(0).into();
+    let name_translations: String = values.remove(0).into();
+    let date = NaiveDate::parse_from_str(&date, "%d.%m.%Y")?;
+    let name = parse_name_translations(name_translations)?;
+    Ok(Holiday::new(auto_increment.next(), date, name))
 }
 
 pub fn parse(path: &str) -> Result<ResourceStorage<Holiday>, Box<dyn Error>> {
@@ -169,7 +165,7 @@ mod tests {
             row_parser: holiday_parser.row_parser.clone(),
             rows,
         };
-        let data = holiday_parser.row_converter(parser).unwrap();
+        let data = row_converter(parser).unwrap();
         // First row (id: 1)
         let attribute = data.get(&1).unwrap();
         let reference = r#"

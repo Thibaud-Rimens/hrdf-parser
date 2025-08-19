@@ -44,7 +44,7 @@ use std::{
     fs::File,
     io::{self, Read, Seek},
 };
-use std::sync::Arc;
+
 use nom::{
     IResult,
 };
@@ -57,7 +57,6 @@ pub enum ExpectedType {
     Integer16,
     Integer32,
     String,
-    OptionInteger16,
     OptionInteger32,
 }
 
@@ -192,12 +191,10 @@ impl RowParser {
                 for (value, col_def) in values.iter().zip(row_definition.definition.iter()) {
                     let parsed_value = match col_def.expected {
                         ExpectedType::Float => ParsedValue::Float(value.parse()?),
-                        ExpectedType::Float => ParsedValue::Float(value.parse()?),
                         ExpectedType::Integer16 => ParsedValue::Integer16(value.parse()?),
                         ExpectedType::Integer32 => ParsedValue::Integer32(value.parse()?),
                         ExpectedType::String => ParsedValue::String(value.to_string()),
                         ExpectedType::OptionInteger32 => ParsedValue::OptionInteger32(value.parse().ok()),
-                        ExpectedType::OptionInteger16 => ParsedValue::OptionInteger16(value.parse().ok()),
                     };
                     parsed_values.push(parsed_value);
                 }
@@ -220,17 +217,17 @@ type ParsedRow = (i32, u64, Vec<ParsedValue>);
 
 pub struct FileParser {
     rows: Vec<String>,
-    row_parser: Arc<RowParser>,
+    row_parser: RowParser,
 }
 
 impl FileParser {
-    pub fn new(path: &str, row_parser: Arc<RowParser>) -> io::Result<Self> {
+    pub fn new(path: &str, row_parser: RowParser) -> io::Result<Self> {
         Self::new_with_bytes_offset(path, row_parser, 0)
     }
 
     pub fn new_with_bytes_offset(
         path: &str,
-        row_parser: Arc<RowParser>,
+        row_parser: RowParser,
         bytes_offset: u64,
     ) -> io::Result<Self> {
         let rows = Self::read_lines(path, bytes_offset)?;

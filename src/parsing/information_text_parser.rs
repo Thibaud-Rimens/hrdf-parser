@@ -18,7 +18,6 @@
 /// File(s) read by the parser:
 /// INFOTEXT_DE, INFOTEXT_EN, INFOTEXT_FR, INFOTEXT_IT
 use std::error::Error;
-use std::sync::Arc;
 use nom::bytes::complete::take;
 use nom::character::complete::space1;
 use nom::combinator::rest;
@@ -36,8 +35,8 @@ use crate::parsing::ParserFnReturn;
 pub struct InformationTextParser {
     files: Vec<String>,
     languages: Vec<Language>,
-    id_row_parser: Arc<RowParser>,
-    infotext_row_parser: Arc<RowParser>,
+    id_row_parser: RowParser,
+    infotext_row_parser: RowParser,
 }
 
 impl InformationTextParser {
@@ -60,25 +59,29 @@ impl InformationTextParser {
         Self {
             files: vec!["INFOTEXT_DE".to_string(), "INFOTEXT_EN".to_string(), "INFOTEXT_FR".to_string(), "INFOTEXT_IT".to_string()],
             languages: vec![Language::German, Language::English, Language::French, Language::Italian],
-            id_row_parser: Arc::new(RowParser::new(vec![
-                RowDefinition::new(
+            id_row_parser: RowParser::new({
+                let mut rows = vec![];
+                rows.push(RowDefinition::new(
                     0,
                     vec![
                         ColumnDefinition::new(ExpectedType::Integer32)
                     ],
                     Self::get_parser_1
-                )
-            ])),
-            infotext_row_parser: Arc::new(RowParser::new(vec![
-                RowDefinition::new(
+                ));
+                rows
+            }),
+            infotext_row_parser: RowParser::new({
+                let mut rows = vec![];
+                rows.push(RowDefinition::new(
                     0,
                     vec![
                         ColumnDefinition::new(ExpectedType::Integer32),
                         ColumnDefinition::new(ExpectedType::String),
                     ],
                     Self::get_parser_2
-                )
-            ]))
+                ));
+                rows
+            })
         }
     }
 
@@ -87,7 +90,7 @@ impl InformationTextParser {
             log::info!("Parsing {}...", file);
         }
 
-        let parser = FileParser::new(&format!("{}/{}", path, self.files[0]), Arc::clone(&self.id_row_parser))?;
+        let parser = FileParser::new(&format!("{}/{}", path, self.files[0]), self.id_row_parser.clone())?;
         let mut data = id_row_converter(parser)?;
 
         for language in self.languages.iter() {
@@ -109,7 +112,7 @@ impl InformationTextParser {
             Language::French => "INFOTEXT_FR",
             Language::Italian => "INFOTEXT_IT",
         };
-        let parser = FileParser::new(&format!("{path}/{filename}"), Arc::clone(&self.infotext_row_parser))?;
+        let parser = FileParser::new(&format!("{path}/{filename}"), self.infotext_row_parser.clone())?;
         infotext_row_converter(parser, data, language)
     }
 }
@@ -179,7 +182,7 @@ mod tests {
         ];
         let information_text_parser = InformationTextParser::new();
         let parser = FileParser {
-            row_parser: Arc::clone(&information_text_parser.id_row_parser),
+            row_parser: information_text_parser.id_row_parser.clone(),
             rows,
         };
         let mut parser_iterator = parser.parse();
@@ -199,7 +202,7 @@ mod tests {
         ];
         let information_text_parser = InformationTextParser::new();
         let parser = FileParser {
-            row_parser: Arc::clone(&information_text_parser.id_row_parser),
+            row_parser: information_text_parser.id_row_parser.clone(),
             rows,
         };
         let data = id_row_converter(parser).unwrap();
@@ -231,7 +234,7 @@ mod tests {
         ];
         let information_text_parser = InformationTextParser::new();
         let parser = FileParser {
-            row_parser: Arc::clone(&information_text_parser.infotext_row_parser),
+            row_parser: information_text_parser.infotext_row_parser.clone(),
             rows,
         };
         let mut parser_iterator = parser.parse();
@@ -255,14 +258,14 @@ mod tests {
         ];
         let information_text_parser = InformationTextParser::new();
         let parser = FileParser {
-            row_parser: Arc::clone(&information_text_parser.infotext_row_parser),
+            row_parser: information_text_parser.infotext_row_parser.clone(),
             rows: rows.clone(),
         };
         let mut data = id_row_converter(parser).unwrap();
 
         for language in information_text_parser.languages.iter() {
             let parser = FileParser {
-                row_parser: Arc::clone(&information_text_parser.infotext_row_parser),
+                row_parser: information_text_parser.infotext_row_parser.clone(),
                 rows: rows.clone(),
             };
 

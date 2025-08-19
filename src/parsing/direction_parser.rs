@@ -12,7 +12,6 @@
 /// File(s) read by the parser:
 /// RICHTUNG
 use std::error::Error;
-use std::sync::Arc;
 use nom::{
     {Parser},
     bytes::complete::take,
@@ -33,7 +32,7 @@ type FxHashMapsAndTypeConverter = (FxHashMap<i32, Direction>, FxHashMap<String, 
 
 pub struct DirectionParser {
     file: String,
-    row_parser: Arc<RowParser>
+    row_parser: RowParser
 }
 
 impl DirectionParser {
@@ -48,7 +47,7 @@ impl DirectionParser {
     pub fn new() -> Self {
         Self {
             file: "RICHTUNG".to_string(),
-            row_parser: Arc::new(RowParser::new(vec![
+            row_parser: RowParser::new(vec![
                 RowDefinition::new(
                     0,
                     vec![
@@ -57,46 +56,44 @@ impl DirectionParser {
                     ],
                     Self::get_parser_1
                 )
-            ]))
+            ])
         }
     }
 
     fn parse(&self, path: &str) -> Result<DirectionAndTypeConverter, Box<dyn Error>> {
         log::info!("Parsing {}...", self.file);
-        let parser = FileParser::new(&format!("{}/{}", path, self.file), Arc::clone(&self.row_parser))?;
-        let (data, pk_type_converter) = self.row_converter(parser)?;
+        let parser = FileParser::new(&format!("{}/{}", path, self.file), self.row_parser.clone())?;
+        let (data, pk_type_converter) = row_converter(parser)?;
         Ok((ResourceStorage::new(data), pk_type_converter))
     }
+}
 
-    pub fn row_converter(
-        &self,
-        parser: FileParser,
-    ) -> Result<FxHashMapsAndTypeConverter, Box<dyn Error>> {
-        let mut pk_type_converter = FxHashMap::default();
+pub fn row_converter(
+    parser: FileParser,
+) -> Result<FxHashMapsAndTypeConverter, Box<dyn Error>> {
+    let mut pk_type_converter = FxHashMap::default();
 
-        let data = parser
-            .parse()
-            .map(|x| x.and_then(|(_, _, values)| self.create_instance(values, &mut pk_type_converter)))
-            .collect::<Result<Vec<_>, _>>()?;
-        let data = Direction::vec_to_map(data);
-        Ok((data, pk_type_converter))
-    }
+    let data = parser
+        .parse()
+        .map(|x| x.and_then(|(_, _, values)| create_instance(values, &mut pk_type_converter)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let data = Direction::vec_to_map(data);
+    Ok((data, pk_type_converter))
+}
 
-    fn create_instance(
-        &self,
-        values: Vec<ParsedValue>,
-        pk_type_converter: &mut FxHashMap<String, i32>,
-    ) -> Result<Direction, Box<dyn Error>> {
-        let (legacy_id, name) = row_from_parsed_values(values);
-        let id = remove_first_char(&legacy_id).parse::<i32>()?;
+fn create_instance(
+    values: Vec<ParsedValue>,
+    pk_type_converter: &mut FxHashMap<String, i32>,
+) -> Result<Direction, Box<dyn Error>> {
+    let (legacy_id, name) = row_from_parsed_values(values);
+    let id = remove_first_char(&legacy_id).parse::<i32>()?;
 
-        if let Some(previous) = pk_type_converter.insert(legacy_id.clone(), id) {
-            log::warn!(
+    if let Some(previous) = pk_type_converter.insert(legacy_id.clone(), id) {
+        log::warn!(
                 "Warning: previous id {previous} for {legacy_id}. The legacy_id, {legacy_id} is not unique."
             );
-        }
-        Ok(Direction::new(id, name))
     }
+    Ok(Direction::new(id, name))
 }
 
 pub fn parse(path: &str) -> Result<DirectionAndTypeConverter, Box<dyn Error>> {
@@ -173,7 +170,7 @@ mod tests {
             row_parser: direction_parser.row_parser.clone(),
             rows,
         };
-        let (data, pk_type_converter) = direction_parser.row_converter(parser).unwrap();
+        let (data, pk_type_converter) = row_converter(parser).unwrap();
         assert_eq!(*pk_type_converter.get("R000008").unwrap(), 8);
         assert_eq!(*pk_type_converter.get("R000192").unwrap(), 192);
         assert_eq!(*pk_type_converter.get("R002609").unwrap(), 2609);

@@ -1,5 +1,4 @@
 use std::error::Error;
-use std::sync::Arc;
 use nom::bytes::complete::take;
 use nom::character::complete::space1;
 use nom::Parser;
@@ -10,7 +9,7 @@ use crate::{Stop};
 
 pub struct ExchangeTimeParser {
     file: String,
-    row_parser: Arc<RowParser>
+    row_parser: RowParser
 }
 
 impl ExchangeTimeParser {
@@ -27,7 +26,7 @@ impl ExchangeTimeParser {
     pub fn new() -> Self {
         Self {
             file: "UMSTEIGB".to_string(),
-            row_parser: Arc::new(RowParser::new({
+            row_parser: RowParser::new({
                 let mut rows = vec![];
                 rows.push(RowDefinition::new(
                     0,
@@ -39,7 +38,7 @@ impl ExchangeTimeParser {
                     Self::get_parser_1,
                 ));
                 rows
-            }))
+            })
         }
     }
 
@@ -49,7 +48,7 @@ impl ExchangeTimeParser {
         data: &mut FxHashMap<i32, Stop>,
     ) -> Result<(i16, i16), Box<dyn Error>> {
         log::info!("Parsing {}...", self.file);
-        let parser = FileParser::new(&format!("{}/{}", path, self.file), Arc::clone(&self.row_parser))?;
+        let parser = FileParser::new(&format!("{}/{}", path, self.file), self.row_parser.clone())?;
         let mut default_exchange_time = (0, 0);
         parser.parse().try_for_each(|x| {
             let (_, _, values) = x?;

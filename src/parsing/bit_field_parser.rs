@@ -25,7 +25,6 @@
 /// File(s) read by the parser:
 /// BITFELD
 use std::error::Error;
-use std::sync::Arc;
 use nom::bytes::complete::take;
 use nom::character::complete::space1;
 use nom::Parser;
@@ -41,7 +40,7 @@ use crate::{
 use crate::parsing::ParserFnReturn;
 pub struct BitFieldParser {
     file: String,
-    row_parser: Arc<RowParser>
+    row_parser: RowParser
 }
 impl BitFieldParser {
     fn get_parser_1(input: &str) -> ParserFnReturn {
@@ -55,40 +54,42 @@ impl BitFieldParser {
     pub fn new() -> Self {
         Self {
             file: "BITFELD".to_string(),
-            row_parser: Arc::new(RowParser::new(vec![
-                RowDefinition::new(
+            row_parser: RowParser::new({
+                let mut rows = vec![];
+                rows.push(RowDefinition::new(
                     0,
                     vec![
                         ColumnDefinition::new(ExpectedType::Integer32),
                         ColumnDefinition::new(ExpectedType::String),
                     ],
                     Self::get_parser_1
-                )
-            ]))
+                ));
+                rows
+            })
         }
-    }
-
-    fn row_converter(&self, parser: FileParser) -> Result<FxHashMap<i32, BitField>, Box<dyn Error>> {
-        let data = parser
-            .parse()
-            .map(|x| x.and_then(|(_, _, values)| self.create_instance(values)))
-            .collect::<Result<Vec<_>, _>>()?;
-        let data = BitField::vec_to_map(data);
-        Ok(data)
     }
 
     fn parse(&self, path: &str) -> Result<ResourceStorage<BitField>, Box<dyn Error>> {
         log::info!("Parsing {}...", self.file);
-        let parser = FileParser::new(&format!("{}/{}", path, self.file), Arc::clone(&self.row_parser))?;
-        let data = self.row_converter(parser)?;
+        let parser = FileParser::new(&format!("{}/{}", path, self.file), self.row_parser.clone())?;
+        let data = row_converter(parser)?;
         Ok(ResourceStorage::new(data))
     }
+}
 
-    fn create_instance(&self, values: Vec<ParsedValue>) -> Result<BitField, Box<dyn Error>> {
-        let (id, hex_number) = row_from_parsed_values(values);
-        let bits = convert_hex_number_to_bits(hex_number)?;
-        Ok(BitField::new(id, bits))
-    }
+fn row_converter(parser: FileParser) -> Result<FxHashMap<i32, BitField>, Box<dyn Error>> {
+    let data = parser
+        .parse()
+        .map(|x| x.and_then(|(_, _, values)| create_instance(values)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let data = BitField::vec_to_map(data);
+    Ok(data)
+}
+
+fn create_instance(values: Vec<ParsedValue>) -> Result<BitField, Box<dyn Error>> {
+    let (id, hex_number) = row_from_parsed_values(values);
+    let bits = convert_hex_number_to_bits(hex_number)?;
+    Ok(BitField::new(id, bits))
 }
 
 pub fn parse(path: &str) -> Result<ResourceStorage<BitField>, Box<dyn Error>> {
@@ -172,7 +173,7 @@ mod tests {
             row_parser: bitfield_parser.row_parser.clone(),
             rows,
         };
-        let data = bitfield_parser.row_converter(parser).unwrap();
+        let data = row_converter(parser).unwrap();
         // First row (id: 1)
         let attribute = data.get(&17).unwrap();
         let reference = r#"

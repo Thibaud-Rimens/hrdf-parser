@@ -1,7 +1,6 @@
 use std::error::Error;
-use std::sync::Arc;
 use nom::bytes::complete::take;
-use nom::character::complete::space1;
+use nom::character::complete::{char};
 use nom::Parser;
 use nom::sequence::preceded;
 use rustc_hash::FxHashMap;
@@ -10,37 +9,37 @@ use crate::{CoordinateSystem, Coordinates, Stop, Version};
 
 pub struct CoordinateParser {
     files: Vec<String>,
-    row_parser: Arc<RowParser>
+    row_parser: RowParser
 }
 
 impl CoordinateParser {
     fn get_parser_2_1(input: &str) -> ParserFnReturn {
         let mut parser = (
             take(7usize),
-            preceded(space1, take(10usize)),
-            preceded(space1, take(10usize)),
-            preceded(space1, take(6usize)),
+            preceded(char(' '), take(10usize)),
+            preceded(char(' '), take(10usize)),
+            preceded(char(' '), take(6usize)),
         );
         let (i2, data) = parser.parse(input)?;
-        Ok((i2, vec![data.0, data.1]))
+        Ok((i2, vec![data.0, data.1, data.2, data.3]))
     }
 
     fn get_parser_2_2(input: &str) -> ParserFnReturn {
         let mut parser = (
             take(7usize),
-            preceded(space1, take(11usize)),
-            preceded(space1, take(11usize)),
-            preceded(space1, take(7usize))
+            preceded(char(' '), take(11usize)),
+            preceded(char(' '), take(11usize)),
+            preceded(char(' '), take(7usize))
 
         );
         let (i2, data) = parser.parse(input)?;
-        Ok((i2, vec![data.0, data.1]))
+        Ok((i2, vec![data.0, data.1, data.2, data.3]))
     }
 
     pub fn new(version: Version) -> Self {
         Self {
             files: vec!["BFKOORD_LV95".to_string(), "BFKOORD_WGS".to_string()],
-            row_parser: Arc::new(RowParser::new({
+            row_parser: RowParser::new({
                 let mut rows = vec![];
                 rows.push(RowDefinition::new(
                     0,
@@ -56,7 +55,7 @@ impl CoordinateParser {
                     }
                 ));
                 rows
-            }))
+            })
         }
     }
 
@@ -71,7 +70,7 @@ impl CoordinateParser {
             CoordinateSystem::WGS84 => self.files[1].clone(),
         };
         log::info!("Parsing {}...", filename);
-        let parser = FileParser::new(&format!("{path}/{filename}"), Arc::clone(&self.row_parser))?;
+        let parser = FileParser::new(&format!("{path}/{filename}"), self.row_parser.clone())?;
 
         parser.parse().try_for_each(|x| {
             let (_, _, values) = x?;

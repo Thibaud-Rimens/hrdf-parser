@@ -208,7 +208,6 @@
 /// File(s) read by the parser:
 /// FPLAN
 use std::error::Error;
-use std::sync::Arc;
 use chrono::NaiveTime;
 use nom::bytes::complete::{tag, take};
 use nom::character::complete::{char, space1};
@@ -220,7 +219,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::{JourneyId, models::{Journey, JourneyMetadataEntry, JourneyMetadataType, JourneyRouteEntry, Model}, parsing::{
     ColumnDefinition, ExpectedType, FileParser, ParsedValue, RowDefinition,
     RowParser,
-}, storage::ResourceStorage, utils::{AutoIncrement, create_time_from_value}, Language, InformationText};
+}, storage::ResourceStorage, utils::{AutoIncrement, create_time_from_value}};
 
 use crate::parsing::ParserFnReturn;
 
@@ -240,7 +239,7 @@ enum RowType {
 
 pub struct JourneyParser {
     file: String,
-    row_parser: Arc<RowParser>
+    row_parser: RowParser
 }
 
 impl JourneyParser {
@@ -255,7 +254,7 @@ impl JourneyParser {
 
     fn get_parser_2(input: &str) -> ParserFnReturn {
         let mut parser = (
-            preceded(tag("*G"), preceded(space1, take(3usize))),
+            preceded((tag("*G"), space1), take(3usize)),
             preceded(char(' '), opt(take(7usize))),
             preceded(char(' '), opt(take(7usize)))
         );
@@ -265,7 +264,7 @@ impl JourneyParser {
 
     fn get_parser_3(input: &str) -> ParserFnReturn {
         let mut parser = (
-            preceded(tag("*A VE"), preceded(space1, opt(take(7usize)))),
+            preceded((tag("*A VE"), space1), opt(take(7usize))),
             preceded(char(' '), opt(take(7usize))),
             preceded(char(' '), opt(take(6usize)))
         );
@@ -275,7 +274,7 @@ impl JourneyParser {
 
     fn get_parser_4(input: &str) -> ParserFnReturn {
         let mut parser = (
-            preceded(tag("*A"), preceded(space1, take(2usize))),
+            preceded((tag("*A"), space1), take(2usize)),
             preceded(char(' '), opt(take(7usize))),
             preceded(char(' '), opt(take(7usize)))
         );
@@ -285,7 +284,7 @@ impl JourneyParser {
 
     fn get_parser_5(input: &str) -> ParserFnReturn {
         let mut parser = (
-            preceded(tag("*I"), preceded(space1, take(2usize))),
+            preceded((tag("*I"), space1), take(2usize)),
             preceded(char(' '), opt(take(7usize))),
             preceded(char(' '), opt(take(7usize))),
             preceded(char(' '), opt(take(6usize))),
@@ -299,7 +298,7 @@ impl JourneyParser {
 
     fn get_parser_6(input: &str) -> ParserFnReturn {
         let mut parser = (
-            preceded(tag("*L"), preceded(space1, take(8usize))),
+            preceded((tag("*L"), space1), take(8usize)),
             preceded(char(' '), opt(take(7usize))),
             preceded(char(' '), opt(take(7usize))),
             preceded(char(' '), opt(take(6usize))),
@@ -311,7 +310,7 @@ impl JourneyParser {
 
     fn get_parser_7(input: &str) -> ParserFnReturn {
         let mut parser = (
-            preceded(tag("*R"), preceded(space1, take(1usize))),
+            preceded((tag("*R"), space1), take(1usize)),
             preceded(char(' '), take(7usize)),
             preceded(char(' '), opt(take(7usize))),
             preceded(char(' '), opt(take(7usize))),
@@ -357,17 +356,18 @@ impl JourneyParser {
     pub fn new() -> Self {
         Self {
             file: "FPLAN".to_string(),
-            row_parser: Arc::new(RowParser::new(vec![
+            row_parser: RowParser::new({
+                let mut rows = vec![];
                 // This row is used to create a Journey instance.
-                RowDefinition::new(
+                rows.push(RowDefinition::new(
                     RowType::RowA as i32,
                     vec![
                         ColumnDefinition::new(ExpectedType::Integer32),
                         ColumnDefinition::new(ExpectedType::String),
                     ],
                     Self::get_parser_1
-                ),
-                RowDefinition::new(
+                ));
+                rows.push(RowDefinition::new(
                     RowType::RowB as i32,
                     vec![
                         ColumnDefinition::new(ExpectedType::String),
@@ -375,8 +375,8 @@ impl JourneyParser {
                         ColumnDefinition::new(ExpectedType::OptionInteger32),
                     ],
                     Self::get_parser_2
-                ),
-                RowDefinition::new(
+                ));
+                rows.push(RowDefinition::new(
                     RowType::RowC as i32,
                     vec![
                         ColumnDefinition::new(ExpectedType::OptionInteger32),
@@ -384,8 +384,8 @@ impl JourneyParser {
                         ColumnDefinition::new(ExpectedType::OptionInteger32),
                     ],
                     Self::get_parser_3
-                ),
-                RowDefinition::new(
+                ));
+                rows.push(RowDefinition::new(
                     RowType::RowD as i32,
                     vec![
                         ColumnDefinition::new(ExpectedType::String),
@@ -393,8 +393,8 @@ impl JourneyParser {
                         ColumnDefinition::new(ExpectedType::OptionInteger32),
                     ],
                     Self::get_parser_4
-                ),
-                RowDefinition::new(
+                ));
+                rows.push(RowDefinition::new(
                     RowType::RowE as i32,
                     vec![
                         ColumnDefinition::new(ExpectedType::String),
@@ -406,8 +406,8 @@ impl JourneyParser {
                         ColumnDefinition::new(ExpectedType::OptionInteger32),
                     ],
                     Self::get_parser_5
-                ),
-                RowDefinition::new(
+                ));
+                rows.push(RowDefinition::new(
                     RowType::RowF as i32,
                     vec![
                         ColumnDefinition::new(ExpectedType::String),
@@ -417,8 +417,8 @@ impl JourneyParser {
                         ColumnDefinition::new(ExpectedType::OptionInteger32),
                     ],
                     Self::get_parser_6
-                ),
-                RowDefinition::new(
+                ));
+                rows.push(RowDefinition::new(
                     RowType::RowG as i32,
                     vec![
                         ColumnDefinition::new(ExpectedType::String),
@@ -429,9 +429,9 @@ impl JourneyParser {
                         ColumnDefinition::new(ExpectedType::OptionInteger32),
                     ],
                     Self::get_parser_7
-                ),
+                ));
                 // *CI
-                RowDefinition::new(
+                rows.push(RowDefinition::new(
                     RowType::RowH as i32,
                     vec![
                         ColumnDefinition::new(ExpectedType::String),
@@ -440,9 +440,9 @@ impl JourneyParser {
                         ColumnDefinition::new(ExpectedType::OptionInteger32),
                     ],
                     Self::get_parser_8
-                ),
+                ));
                 // *CO
-                RowDefinition::new(
+                rows.push(RowDefinition::new(
                     RowType::RowH as i32,
                     vec![
                         ColumnDefinition::new(ExpectedType::String),
@@ -451,8 +451,8 @@ impl JourneyParser {
                         ColumnDefinition::new(ExpectedType::OptionInteger32),
                     ],
                     Self::get_parser_9
-                ),
-                RowDefinition::new(
+                ));
+                rows.push(RowDefinition::new(
                     RowType::RowI as i32,
                     vec![
                         ColumnDefinition::new(ExpectedType::Integer32),
@@ -460,58 +460,10 @@ impl JourneyParser {
                         ColumnDefinition::new(ExpectedType::OptionInteger32),
                     ],
                     Self::get_parser_10
-                ),
-            ]))
-        }
-    }
-
-    fn row_converter(
-        &self,
-        parser: FileParser,
-        transport_types_pk_type_converter: &FxHashMap<String, i32>,
-        attributes_pk_type_converter: &FxHashMap<String, i32>,
-        directions_pk_type_converter: &FxHashMap<String, i32>,
-    ) -> Result<(FxHashMap<i32, Journey>, FxHashSet<JourneyId>), Box<dyn Error>> {
-        let auto_increment = AutoIncrement::new();
-        let mut data = Vec::new();
-        let mut pk_type_converter = FxHashSet::default();
-
-        for x in parser.parse() {
-            let (id, _, values) = x?;
-            if RowType::RowA as i32 == id {
-                data.push(self.create_instance(
-                    values,
-                    &auto_increment,
-                    &mut pk_type_converter,
                 ));
-            } else {
-                let journey = data.last_mut().ok_or("Type A row missing.")?;
-
-                if id == RowType::RowB as i32 {
-                    set_transport_type(values, journey, transport_types_pk_type_converter)?;
-                } else if id == RowType::RowC as i32 {
-                    set_bit_field(values, journey);
-                } else if id == RowType::RowD as i32 {
-                    add_attribute(values, journey, attributes_pk_type_converter)?;
-                } else if id == RowType::RowE as i32 {
-                    add_information_text(values, journey);
-                } else if id == RowType::RowF as i32 {
-                    set_line(values, journey)?;
-                } else if id == RowType::RowG as i32 {
-                    set_direction(values, journey, directions_pk_type_converter)?;
-                } else if id == RowType::RowH as i32 {
-                    set_boarding_or_disembarking_exchange_time(values, journey);
-                } else if id == RowType::RowI as i32 {
-                    add_route_entry(values, journey);
-                } else {
-                    unreachable!();
-                }
-            }
+                rows
+            })
         }
-
-        let data = Journey::vec_to_map(data);
-
-        Ok((data, pk_type_converter))
     }
 
     fn parse(
@@ -522,8 +474,8 @@ impl JourneyParser {
         directions_pk_type_converter: &FxHashMap<String, i32>,
     ) -> Result<JourneyAndTypeConverter, Box<dyn Error>> {
         log::info!("Parsing {}...", self.file);
-        let parser = FileParser::new(&format!("{}/{}", path, self.file), Arc::clone(&self.row_parser))?;
-        let (data, pk_type_converter) = self.row_converter(
+        let parser = FileParser::new(&format!("{}/{}", path, self.file), self.row_parser.clone())?;
+        let (data, pk_type_converter) = row_converter(
             parser,
             transport_types_pk_type_converter,
             attributes_pk_type_converter,
@@ -531,19 +483,65 @@ impl JourneyParser {
         )?;
         Ok((ResourceStorage::new(data), pk_type_converter))
     }
+}
 
+fn row_converter(
+    parser: FileParser,
+    transport_types_pk_type_converter: &FxHashMap<String, i32>,
+    attributes_pk_type_converter: &FxHashMap<String, i32>,
+    directions_pk_type_converter: &FxHashMap<String, i32>,
+) -> Result<(FxHashMap<i32, Journey>, FxHashSet<JourneyId>), Box<dyn Error>> {
+    let auto_increment = AutoIncrement::new();
+    let mut data = Vec::new();
+    let mut pk_type_converter = FxHashSet::default();
 
-    fn create_instance(
-        &self,
-        values: Vec<ParsedValue>,
-        auto_increment: &AutoIncrement,
-        pk_type_converter: &mut FxHashSet<JourneyId>,
-    ) -> Journey {
-        let (legacy_id, administration) = row_a_from_parsed_values(values);
-        let id = auto_increment.next();
-        pk_type_converter.insert((legacy_id, administration.to_owned()));
-        Journey::new(id, legacy_id, administration)
+    for x in parser.parse() {
+        let (id, _, values) = x?;
+        if RowType::RowA as i32 == id {
+            data.push(create_instance(
+                values,
+                &auto_increment,
+                &mut pk_type_converter,
+            ));
+        } else {
+            let journey = data.last_mut().ok_or("Type A row missing.")?;
+
+            if id == RowType::RowB as i32 {
+                set_transport_type(values, journey, transport_types_pk_type_converter)?;
+            } else if id == RowType::RowC as i32 {
+                set_bit_field(values, journey);
+            } else if id == RowType::RowD as i32 {
+                add_attribute(values, journey, attributes_pk_type_converter)?;
+            } else if id == RowType::RowE as i32 {
+                add_information_text(values, journey);
+            } else if id == RowType::RowF as i32 {
+                set_line(values, journey)?;
+            } else if id == RowType::RowG as i32 {
+                set_direction(values, journey, directions_pk_type_converter)?;
+            } else if id == RowType::RowH as i32 {
+                set_boarding_or_disembarking_exchange_time(values, journey);
+            } else if id == RowType::RowI as i32 {
+                add_route_entry(values, journey);
+            } else {
+                unreachable!();
+            }
+        }
     }
+
+    let data = Journey::vec_to_map(data);
+
+    Ok((data, pk_type_converter))
+}
+
+fn create_instance(
+    values: Vec<ParsedValue>,
+    auto_increment: &AutoIncrement,
+    pk_type_converter: &mut FxHashSet<JourneyId>,
+) -> Journey {
+    let (legacy_id, administration) = row_a_from_parsed_values(values);
+    let id = auto_increment.next();
+    pk_type_converter.insert((legacy_id, administration.to_owned()));
+    Journey::new(id, legacy_id, administration)
 }
 
 pub fn parse(

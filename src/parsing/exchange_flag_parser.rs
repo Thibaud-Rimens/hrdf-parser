@@ -1,7 +1,6 @@
 use std::error::Error;
-use std::sync::Arc;
 use nom::bytes::complete::take;
-use nom::character::complete::space1;
+use nom::character::complete::{char};
 use nom::Parser;
 use nom::sequence::preceded;
 use rustc_hash::FxHashMap;
@@ -10,14 +9,14 @@ use crate::{Stop};
 
 pub struct ExchangeFlagParser {
     file: String,
-    row_parser: Arc<RowParser>
+    row_parser: RowParser
 }
 
 impl ExchangeFlagParser {
     fn get_parser_1(input: &str) -> ParserFnReturn {
         let mut parser = (
             take(7usize),
-            preceded(space1, take(5usize)),
+            preceded(char(' '), take(5usize)),
 
         );
         let (i2, data) = parser.parse(input)?;
@@ -27,7 +26,7 @@ impl ExchangeFlagParser {
     pub fn new() -> Self {
         Self {
             file: "KMINFO".to_string(),
-            row_parser: Arc::new(RowParser::new({
+            row_parser: RowParser::new({
                 let mut rows = vec![];
                 rows.push(RowDefinition::new(
                     0,
@@ -38,13 +37,13 @@ impl ExchangeFlagParser {
                     Self::get_parser_1,
                 ));
                 rows
-            }))
+            })
         }
     }
 
     fn parse(&self, path: &str, data: &mut FxHashMap<i32, Stop>) -> Result<(), Box<dyn Error>> {
         log::info!("Parsing {}...", self.file);
-        let parser = FileParser::new(&format!("{}/{}", path, self.file), Arc::clone(&self.row_parser))?;
+        let parser = FileParser::new(&format!("{}/{}", path, self.file), self.row_parser.clone())?;
 
         parser.parse().try_for_each(|x| {
             let (_, _, values) = x?;

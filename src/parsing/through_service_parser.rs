@@ -2,20 +2,18 @@
 // File(s) read by the parser:
 // DURCHBI
 use std::error::Error;
-use std::sync::Arc;
 use nom::bytes::complete::take;
 use nom::character::complete::space1;
-use nom::combinator::rest;
 use nom::Parser;
 use nom::sequence::preceded;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::{JourneyId, models::{Model, ThroughService}, parsing::{ColumnDefinition, ExpectedType, FileParser, ParsedValue, RowDefinition, RowParser}, storage::ResourceStorage, utils::AutoIncrement, Stop};
+use crate::{JourneyId, models::{Model, ThroughService}, parsing::{ColumnDefinition, ExpectedType, FileParser, ParsedValue, RowDefinition, RowParser}, storage::ResourceStorage, utils::AutoIncrement};
 use crate::parsing::ParserFnReturn;
 
 pub struct ThroughServiceParser {
     file: String,
-    row_parser: Arc<RowParser>
+    row_parser: RowParser
 }
 
 impl ThroughServiceParser {
@@ -37,7 +35,7 @@ impl ThroughServiceParser {
     pub fn new() -> Self {
         Self {
             file: "DURCHBI".to_string(),
-            row_parser: Arc::new(RowParser::new( {
+            row_parser: RowParser::new( {
                 let mut rows = vec![];
                 rows.push(RowDefinition::new(
                     0,
@@ -53,23 +51,8 @@ impl ThroughServiceParser {
                     Self::get_parser_1
                 ));
                 rows
-            }))
-        }
-    }
-
-    fn row_converter(&self, parser: FileParser, journeys_pk_type_converter: &FxHashSet<JourneyId>) -> Result<FxHashMap<i32, ThroughService>, Box<dyn Error>>{
-        let auto_increment = AutoIncrement::new();
-
-        let data = parser
-            .parse()
-            .map(|x| {
-                x.and_then(|(_, _, values)| {
-                    self.create_instance(values, &auto_increment, journeys_pk_type_converter)
-                })
             })
-            .collect::<Result<Vec<_>, _>>()?;
-        let data = ThroughService::vec_to_map(data);
-        Ok(data)
+        }
     }
 
     fn parse(
@@ -78,46 +61,60 @@ impl ThroughServiceParser {
         journeys_pk_type_converter: &FxHashSet<JourneyId>,
     ) -> Result<ResourceStorage<ThroughService>, Box<dyn Error>> {
         log::info!("Parsing {}...", self.file);
-        let parser = FileParser::new(&format!("{}/{}", path, self.file), Arc::clone(&self.row_parser))?;
-        let data = self.row_converter(parser, journeys_pk_type_converter)?;
+        let parser = FileParser::new(&format!("{}/{}", path, self.file), self.row_parser.clone())?;
+        let data = row_converter(parser, journeys_pk_type_converter)?;
         Ok(ResourceStorage::new(data))
     }
+}
 
-    fn create_instance(
-        &self,
-        mut values: Vec<ParsedValue>,
-        auto_increment: &AutoIncrement,
-        journeys_pk_type_converter: &FxHashSet<JourneyId>,
-    ) -> Result<ThroughService, Box<dyn Error>> {
-        let journey_1_id: i32 = values.remove(0).into();
-        let journey_1_administration: String = values.remove(0).into();
-        let journey_1_stop_id: i32 = values.remove(0).into();
-        let journey_2_id: i32 = values.remove(0).into();
-        let journey_2_administration: String = values.remove(0).into();
-        let bit_field_id: i32 = values.remove(0).into();
-        let journey_2_stop_id: i32 = values.remove(0).into();
+fn row_converter(parser: FileParser, journeys_pk_type_converter: &FxHashSet<JourneyId>) -> Result<FxHashMap<i32, ThroughService>, Box<dyn Error>>{
+    let auto_increment = AutoIncrement::new();
 
-        let _journey_1_id = journeys_pk_type_converter
-            .get(&(journey_1_id, journey_1_administration.clone()))
-            .ok_or("Unknown legacy ID")?;
+    let data = parser
+        .parse()
+        .map(|x| {
+            x.and_then(|(_, _, values)| {
+                create_instance(values, &auto_increment, journeys_pk_type_converter)
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let data = ThroughService::vec_to_map(data);
+    Ok(data)
+}
 
-        let _journey_2_id = journeys_pk_type_converter
-            .get(&(journey_2_id, journey_2_administration.clone()))
-            .ok_or("Unknown legacy ID")?;
+fn create_instance(
+    mut values: Vec<ParsedValue>,
+    auto_increment: &AutoIncrement,
+    journeys_pk_type_converter: &FxHashSet<JourneyId>,
+) -> Result<ThroughService, Box<dyn Error>> {
+    let journey_1_id: i32 = values.remove(0).into();
+    let journey_1_administration: String = values.remove(0).into();
+    let journey_1_stop_id: i32 = values.remove(0).into();
+    let journey_2_id: i32 = values.remove(0).into();
+    let journey_2_administration: String = values.remove(0).into();
+    let bit_field_id: i32 = values.remove(0).into();
+    let journey_2_stop_id: i32 = values.remove(0).into();
 
-        if journey_1_stop_id != journey_2_stop_id {
-            log::info!("{journey_1_stop_id}, {journey_2_stop_id}");
-        }
+    let _journey_1_id = journeys_pk_type_converter
+        .get(&(journey_1_id, journey_1_administration.clone()))
+        .ok_or("Unknown legacy ID")?;
 
-        Ok(ThroughService::new(
-            auto_increment.next(),
-            (journey_1_id, journey_1_administration),
-            journey_1_stop_id,
-            (journey_2_id, journey_2_administration),
-            journey_2_stop_id,
-            bit_field_id,
-        ))
+    let _journey_2_id = journeys_pk_type_converter
+        .get(&(journey_2_id, journey_2_administration.clone()))
+        .ok_or("Unknown legacy ID")?;
+
+    if journey_1_stop_id != journey_2_stop_id {
+        log::info!("{journey_1_stop_id}, {journey_2_stop_id}");
     }
+
+    Ok(ThroughService::new(
+        auto_increment.next(),
+        (journey_1_id, journey_1_administration),
+        journey_1_stop_id,
+        (journey_2_id, journey_2_administration),
+        journey_2_stop_id,
+        bit_field_id,
+    ))
 }
 
 pub fn parse(path: &str, journeys_pk_type_converter: &FxHashSet<JourneyId>) -> Result<ResourceStorage<ThroughService>, Box<dyn Error>> {
