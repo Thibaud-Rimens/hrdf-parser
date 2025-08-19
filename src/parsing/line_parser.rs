@@ -2,91 +2,195 @@
 // File(s) read by the parser:
 // LINIE
 use std::error::Error;
+use std::sync::Arc;
+use nom::bytes::complete::{tag, take};
+use nom::character::complete::space1;
+use nom::combinator::{rest};
+use nom::Parser;
+use nom::sequence::preceded;
+use rustc_hash::FxHashMap;
+use crate::{models::{Color, Line, Model}, parsing::{
+    ColumnDefinition, ExpectedType, FileParser, ParsedValue, RowDefinition,
+    RowParser,
+}, storage::ResourceStorage};
 
-use crate::{
-    models::{Color, Line, Model},
-    parsing::{
-        ColumnDefinition, ExpectedType, FastRowMatcher, FileParser, ParsedValue, RowDefinition,
-        RowParser,
-    },
-    storage::ResourceStorage,
-};
+use crate::parsing::ParserFnReturn;
 
-pub fn parse(path: &str) -> Result<ResourceStorage<Line>, Box<dyn Error>> {
-    log::info!("Parsing LINIE...");
-    const ROW_A: i32 = 1;
-    const ROW_B: i32 = 2;
-    const ROW_C: i32 = 3;
-    const ROW_D: i32 = 4;
-    const ROW_E: i32 = 5;
 
-    #[rustfmt::skip]
-    let row_parser = RowParser::new(vec![
-        // This row is used to create a Line instance.
-        RowDefinition::new(ROW_A, Box::new(FastRowMatcher::new(9, 1, "K", true)), vec![
-            ColumnDefinition::new(1, 7, ExpectedType::Integer32),
-            ColumnDefinition::new(11, -1, ExpectedType::String),
-        ]),
-        // This row contains the short name.
-        RowDefinition::new(ROW_B, Box::new(FastRowMatcher::new(9, 3, "N T", true)), vec![
-            ColumnDefinition::new(13, -1, ExpectedType::String),
-        ]),
-        // This row contains the text color.
-        RowDefinition::new(ROW_C, Box::new(FastRowMatcher::new(9, 1, "F", true)), vec![
-            ColumnDefinition::new(11, 13, ExpectedType::Integer16),
-            ColumnDefinition::new(15, 17, ExpectedType::Integer16),
-            ColumnDefinition::new(19, 21, ExpectedType::Integer16),
-        ]),
-        // This row contains the background color.
-        RowDefinition::new(ROW_D, Box::new(FastRowMatcher::new(9, 1, "B", true)), vec![
-            ColumnDefinition::new(11, 13, ExpectedType::Integer16),
-            ColumnDefinition::new(15, 17, ExpectedType::Integer16),
-            ColumnDefinition::new(19, 21, ExpectedType::Integer16),
-        ]),
-        // This row contains the short name.
-        RowDefinition::new(ROW_E, Box::new(FastRowMatcher::new(9, 3, "L T", true)), vec![
-            ColumnDefinition::new(13, -1, ExpectedType::String),
-        ]),
-    ]);
-    let parser = FileParser::new(&format!("{path}/LINIE"), row_parser)?;
+enum RowType {
+    RowA = 1,
+    RowB = 2,
+    RowC = 3,
+    RowD = 4,
+    RowE = 5,
+}
 
-    let mut data = Vec::new();
+impl TryFrom<i32> for RowType {
+    type Error = ();
+    fn try_from(v: i32) -> Result<Self, Self::Error> {
+        match v {
+            x if x == RowType::RowA as i32 => Ok(RowType::RowA),
+            x if x == RowType::RowB as i32 => Ok(RowType::RowB),
+            x if x == RowType::RowC as i32 => Ok(RowType::RowC),
+            x if x == RowType::RowD as i32 => Ok(RowType::RowD),
+            x if x == RowType::RowE as i32 => Ok(RowType::RowE),
+            _ => Err(()),
+        }
+    }
+}
 
-    for x in parser.parse() {
-        let (id, _, values) = x?;
-        match id {
-            ROW_A => {
-                data.push(create_instance(values));
-            }
-            _ => {
-                let line = data.last_mut().ok_or("Type A row missing.")?;
+pub struct LineParser {
+    file: String,
+    row_parser: Arc<RowParser>
+}
 
-                match id {
-                    ROW_B => set_short_name(values, line),
-                    ROW_C => set_text_color(values, line),
-                    ROW_D => set_background_color(values, line),
-                    ROW_E => set_long_name(values, line),
-                    _ => unreachable!(),
-                }
-            }
+impl LineParser {
+    fn get_parser_1(input: &str) -> ParserFnReturn {
+        let mut parser = (
+            take(7usize),
+            preceded(tag("K"), preceded(space1, rest)),
+        );
+        let (i2, data) = parser.parse(input)?;
+        Ok((i2, vec![data.0, data.1]))
+    }
+
+    fn get_parser_2(input: &str) -> ParserFnReturn {
+        let mut parser = preceded(tag("N T"), preceded(space1, rest));
+        let (i2, data) = parser.parse(input)?;
+        Ok((i2, vec![data]))
+    }
+
+    fn get_parser_3(input: &str) -> ParserFnReturn {
+        let mut parser = (
+            preceded(tag("F"), preceded(space1, take(3usize))),
+            preceded(space1, take(3usize)),
+            preceded(space1, take(3usize)),
+        );
+        let (i2, data) = parser.parse(input)?;
+        Ok((i2, vec![data.0, data.1, data.2]))
+    }
+
+    fn get_parser_4(input: &str) -> ParserFnReturn {
+        let mut parser = (
+            preceded(tag("B"), preceded(space1, take(3usize))),
+            preceded(space1, take(3usize)),
+            preceded(space1, take(3usize)),
+        );
+        let (i2, data) = parser.parse(input)?;
+        Ok((i2, vec![data.0, data.1, data.2]))
+    }
+
+    fn get_parser_5(input: &str) -> ParserFnReturn {
+        let mut parser = preceded(tag("L T"), preceded(space1, rest));
+        let (i2, data) = parser.parse(input)?;
+        Ok((i2, vec![data]))
+    }
+
+    pub fn new() -> Self {
+        Self {
+            file: "LINIE".to_string(),
+            row_parser: Arc::new(RowParser::new(vec![
+                // This row is used to create a Line instance.
+                RowDefinition::new(
+                    RowType::RowA as i32,
+                    vec![
+                        ColumnDefinition::new(ExpectedType::Integer32),
+                        ColumnDefinition::new(ExpectedType::String),
+                    ],
+                    Self::get_parser_1
+                ),
+                // This row contains the short name.
+                RowDefinition::new(
+                    RowType::RowB as i32,
+                    vec![
+                        ColumnDefinition::new(ExpectedType::String),
+                    ],
+                    Self::get_parser_2
+                ),
+                // This row contains the text color.
+                RowDefinition::new(
+                    RowType::RowC as i32,
+                    vec![
+                        ColumnDefinition::new(ExpectedType::Integer16),
+                        ColumnDefinition::new(ExpectedType::Integer16),
+                        ColumnDefinition::new(ExpectedType::Integer16),
+                    ],
+                    Self::get_parser_3
+                ),
+                // This row contains the background color.
+                RowDefinition::new(
+                    RowType::RowD as i32,
+                    vec![
+                        ColumnDefinition::new(ExpectedType::Integer16),
+                        ColumnDefinition::new(ExpectedType::Integer16),
+                        ColumnDefinition::new(ExpectedType::Integer16),
+                    ],
+                    Self::get_parser_4
+                ),
+                // This row contains the short name.
+                RowDefinition::new(
+                    RowType::RowE as i32,
+                    vec![
+                        ColumnDefinition::new(ExpectedType::String),
+                    ],
+                    Self::get_parser_5
+                ),
+            ]))
         }
     }
 
-    let data = Line::vec_to_map(data);
+    fn row_converter(
+        &self,
+        parser: FileParser,
+    ) -> Result<FxHashMap<i32, Line>, Box<dyn Error>>  {
+        let mut data = FxHashMap::default();
+        for x in parser.parse() {
+            let (id, _, values) = x?;
+            match data.get_mut(&id) {
+                None => {
+                    if id == RowType::RowA as i32 {
+                        let line = self.create_instance(values);
+                        data.insert(line.id(), line);
+                    }
+                }
+                Some(line) => {
+                    match id.try_into() {
+                        Ok(RowType::RowB) => set_short_name(values, line),
+                        Ok(RowType::RowC) => set_text_color(values, line),
+                        Ok(RowType::RowD) => set_background_color(values, line),
+                        Ok(RowType::RowE) => set_long_name(values, line),
+                        _ => unreachable!(),
+                    }
+                }
+            }
+        }
+        Ok(data)
+    }
 
-    Ok(ResourceStorage::new(data))
+    pub fn parse(&self, path: &str) -> Result<ResourceStorage<Line>, Box<dyn Error>> {
+        log::info!("Parsing {}...", self.file);
+        let parser = FileParser::new(&format!("{}/{}", path, self.file), Arc::clone(&self.row_parser))?;
+        let data = self.row_converter(parser)?;
+        Ok(ResourceStorage::new(data))
+    }
+
+    fn create_instance(
+        &self,
+        mut values: Vec<ParsedValue>,
+    ) -> Line {
+        let id: i32 = values.remove(0).into();
+        let name: String = values.remove(0).into();
+        Line::new(id, name)
+    }
+}
+
+pub fn parse(path: &str) -> Result<ResourceStorage<Line>, Box<dyn Error>> {
+    LineParser::new().parse(path)
 }
 
 // ------------------------------------------------------------------------------------------------
 // --- Data Processing Functions
 // ------------------------------------------------------------------------------------------------
-
-fn create_instance(mut values: Vec<ParsedValue>) -> Line {
-    let id: i32 = values.remove(0).into();
-    let name: String = values.remove(0).into();
-
-    Line::new(id, name)
-}
 
 fn set_short_name(mut values: Vec<ParsedValue>, line: &mut Line) {
     let short_name: String = values.remove(0).into();

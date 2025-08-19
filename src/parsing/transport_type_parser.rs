@@ -2,165 +2,252 @@
 // File(s) read by the parser:
 // ZUGART
 use std::error::Error;
-
+use std::sync::Arc;
+use nom::bytes::complete::{tag, take};
+use nom::character::complete::space1;
+use nom::combinator::{recognize, rest};
+use nom::Parser;
+use nom::sequence::{pair, preceded};
 use rustc_hash::FxHashMap;
 
-use crate::{
-    Version,
-    models::{Language, Model, TransportType},
-    parsing::{
-        AdvancedRowMatcher, ColumnDefinition, ExpectedType, FastRowMatcher, FileParser,
-        ParsedValue, RowDefinition, RowParser,
-    },
-    storage::ResourceStorage,
-    utils::AutoIncrement,
-};
-
+use crate::{models::{Language, Model}, parsing::{
+    ColumnDefinition, ExpectedType, FileParser,
+    ParsedValue, RowDefinition, RowParser,
+}, storage::ResourceStorage, utils::AutoIncrement, TransportType, Stop, Attribute};
+use crate::parsing::ParserFnReturn;
 type TransportTypeAndTypeConverter = (ResourceStorage<TransportType>, FxHashMap<String, i32>);
 
-pub fn parse(
-    version: Version,
-    path: &str,
-) -> Result<TransportTypeAndTypeConverter, Box<dyn Error>> {
-    log::info!("Parsing ZUGART...");
-    const ROW_A: i32 = 1;
-    const ROW_B: i32 = 2;
-    const ROW_C: i32 = 3;
-    const ROW_D: i32 = 4;
-    const ROW_E: i32 = 5;
-    const ROW_F: i32 = 6;
+type FxHashMapsAndTypeConverter = (FxHashMap<i32, TransportType>, FxHashMap<String, i32>);
 
-    #[rustfmt::skip]
-    let row_parser = RowParser::new(vec![
-        // This row is used to create a TransportType instance.
-        RowDefinition::new(ROW_A, Box::new(
-            AdvancedRowMatcher::new(r"^.{3} [ 0-9]{2}")?
-        ),
+enum RowType {
+    RowA = 1,
+    RowB = 2,
+    RowC = 3,
+    RowD = 4,
+    RowE = 5,
+    RowF = 6,
+}
 
-        match version {
-             Version::V_5_40_41_2_0_4 | Version::V_5_40_41_2_0_5 | Version::V_5_40_41_2_0_6 => vec![
-                ColumnDefinition::new(1, 3, ExpectedType::String),
-                ColumnDefinition::new(5, 6, ExpectedType::Integer16),
-                ColumnDefinition::new(8, 8, ExpectedType::String),
-                ColumnDefinition::new(10, 10, ExpectedType::Integer16),
-                ColumnDefinition::new(12, 19, ExpectedType::String),
-                ColumnDefinition::new(21, 21, ExpectedType::Integer16),
-                ColumnDefinition::new(23, 23, ExpectedType::String),
-            ],
-            Version::V_5_40_41_2_0_7 => vec![
-                ColumnDefinition::new(1, 3, ExpectedType::String),
-                ColumnDefinition::new(5, 6, ExpectedType::Integer16),
-                ColumnDefinition::new(8, 8, ExpectedType::String),
-                ColumnDefinition::new(11, 11, ExpectedType::Integer16),
-                ColumnDefinition::new(13, 20, ExpectedType::String),
-                ColumnDefinition::new(22, 22, ExpectedType::Integer16),
-                ColumnDefinition::new(24, 24, ExpectedType::String),
-            ],
+impl TryFrom<i32> for RowType {
+    type Error = ();
+    fn try_from(v: i32) -> Result<Self, Self::Error> {
+        match v {
+            x if x == RowType::RowA as i32 => Ok(RowType::RowA),
+            x if x == RowType::RowB as i32 => Ok(RowType::RowB),
+            x if x == RowType::RowC as i32 => Ok(RowType::RowC),
+            x if x == RowType::RowD as i32 => Ok(RowType::RowD),
+            x if x == RowType::RowE as i32 => Ok(RowType::RowE),
+            x if x == RowType::RowF as i32 => Ok(RowType::RowF),
+            _ => Err(()),
+        }
+    }
+}
 
-        }),
-        // This row indicates the language for translations in the section that follows it.
-        RowDefinition::new(ROW_B, Box::new(FastRowMatcher::new(1, 1, "<", true)), vec![
-            ColumnDefinition::new(1, -1, ExpectedType::String),
-        ]),
-        // This row contains the product class name in a specific language.
-        RowDefinition::new(ROW_C, Box::new(
-            AdvancedRowMatcher::new(r"^class.+$")?
-        ), vec![
-            ColumnDefinition::new(6, 7, ExpectedType::Integer16),
-            ColumnDefinition::new(9, -1, ExpectedType::String),
-        ]),
-        // This row is ignored.
-        RowDefinition::new(ROW_D, Box::new(AdvancedRowMatcher::new(r"^option.+$")?), Vec::new()),
-        // This row contains the category name in a specific language.
-        RowDefinition::new(ROW_E, Box::new(
-            AdvancedRowMatcher::new(r"^category.+$")?
-        ), vec![
-            ColumnDefinition::new(10, 12, ExpectedType::Integer32),
-            ColumnDefinition::new(14, -1, ExpectedType::String),
-        ]),
-        // This row contains specific information
-        RowDefinition::new(ROW_F, Box::new(FastRowMatcher::new(1, 2, "*I", true)), vec![
-            ColumnDefinition::new(4, 5, ExpectedType::String),
-            ColumnDefinition::new(7, 15, ExpectedType::OptionInteger32),
-        ]),
-    ]);
+pub struct TransportTypeParser {
+    file: String,
+    row_parser: Arc<RowParser>
+}
+impl TransportTypeParser {
+    fn get_parser_1(input: &str) -> ParserFnReturn {
+        let mut parser = (
+            take(3usize),
+            preceded(space1, take(2usize)),
+            preceded(space1, take(1usize)),
+            preceded(space1, take(1usize)),
+            preceded(space1, take(8usize)),
+            preceded(space1, take(1usize)),
+            preceded(space1, take(1usize)),
+        );
+        let (i2, data) = parser.parse(input)?;
+        Ok((i2, vec![data.0, data.1, data.2, data.3, data.4, data.5, data.6]))
+    }
 
-    let parser = FileParser::new(&format!("{path}/ZUGART"), row_parser)?;
+    fn get_parser_2(input: &str) -> ParserFnReturn {
+        let mut parser = recognize((tag("<"), rest));
+        let (i2, data) = parser.parse(input)?;
+        Ok((i2, vec![data]))
+    }
 
-    let auto_increment = AutoIncrement::new();
-    let mut data = Vec::new();
-    let mut pk_type_converter = FxHashMap::default();
+    fn get_parser_3(input: &str) -> ParserFnReturn {
+        let mut parser = (
+            preceded(tag("class"), take(2usize)),
+            preceded(space1, rest),
+        );
+        let (i2, data) = parser.parse(input)?;
+        Ok((i2, vec![data.0, data.1]))
+    }
 
-    let mut current_language = Language::default();
+    fn get_parser_4(input: &str) -> ParserFnReturn {
+        let mut parser = tag("option");
+        let (i2, _) = parser.parse(input)?;
+        Ok((i2, vec![]))
+    }
 
-    for x in parser.parse() {
-        let (id, _, values) = x?;
+    fn get_parser_5(input: &str) -> ParserFnReturn {
+        let mut parser = (
+            preceded(tag("category"), take(3usize)),
+            preceded(space1, rest),
+        );
+        let (i2, data) = parser.parse(input)?;
+        Ok((i2, vec![data.0, data.1]))
+    }
 
-        match id {
-            ROW_A => {
-                let transport_type =
-                    create_instance(values, &auto_increment, &mut pk_type_converter);
-                data.push(transport_type);
-            }
-            _ => {
-                let transport_type = data.last_mut().ok_or("Type A row missing.")?;
+    fn get_parser_6(input: &str) -> ParserFnReturn {
+        let mut parser = (
+            preceded(tag("*I"), preceded(space1, take(2usize))),
+            take(7usize),
+            preceded(space1, take(9usize)),
+        );
+        let (i2, data) = parser.parse(input)?;
+        Ok((i2, vec![data.0, data.1]))
+    }
 
-                match id {
-                    ROW_B => update_current_language(values, &mut current_language),
-                    ROW_C => {
-                        set_product_class_name(values, &mut data, current_language);
-                    }
-                    ROW_D => {}
-                    ROW_E => set_category_name(values, transport_type, current_language),
-                    ROW_F => {
-                        // TODO: Use information, currently not used
-                    }
-                    _ => unreachable!(),
-                }
-            }
+    pub fn new() -> Self {
+        Self {
+            file: "ZUGART".to_string(),
+            row_parser: Arc::new(RowParser::new({
+                let mut rows = vec![];
+                rows.push(RowDefinition::new(
+                    RowType::RowA as i32,
+                    vec![
+                        ColumnDefinition::new(ExpectedType::String),
+                        ColumnDefinition::new(ExpectedType::Integer16),
+                        ColumnDefinition::new(ExpectedType::String),
+                        ColumnDefinition::new(ExpectedType::Integer16),
+                        ColumnDefinition::new(ExpectedType::String),
+                        ColumnDefinition::new(ExpectedType::Integer16),
+                        ColumnDefinition::new(ExpectedType::String),
+                    ],
+                    Self::get_parser_1
+                ));
+                rows.push(RowDefinition::new(
+                    RowType::RowB as i32,
+                    vec![
+                        ColumnDefinition::new(ExpectedType::String),
+                    ],
+                    Self::get_parser_2
+                ));
+                rows.push(RowDefinition::new(
+                    RowType::RowC as i32,
+                    vec![
+                        ColumnDefinition::new(ExpectedType::Integer16),
+                        ColumnDefinition::new(ExpectedType::String),
+                    ],
+                    Self::get_parser_3
+                ));
+                rows.push(RowDefinition::new(
+                    RowType::RowD as i32,
+                    vec![],
+                    Self::get_parser_4
+                ));
+                rows.push(RowDefinition::new(
+                    RowType::RowE as i32,
+                    vec![
+                        ColumnDefinition::new(ExpectedType::Integer32),
+                        ColumnDefinition::new(ExpectedType::String),
+                    ],
+                    Self::get_parser_5
+                ));
+                rows.push(RowDefinition::new(
+                    RowType::RowF as i32,
+                    vec![
+                        ColumnDefinition::new(ExpectedType::String),
+                        ColumnDefinition::new(ExpectedType::OptionInteger32),
+                    ],
+                    Self::get_parser_6
+                ));
+                rows
+            }))
         }
     }
 
-    let data = TransportType::vec_to_map(data);
+    fn row_converter(
+        &self,
+        parser: FileParser,
+    ) -> Result<FxHashMapsAndTypeConverter, Box<dyn Error>> {
+        let auto_increment = AutoIncrement::new();
+        let mut data = Vec::new();
+        let mut pk_type_converter = FxHashMap::default();
+        let mut current_language = Language::default();
 
-    Ok((ResourceStorage::new(data), pk_type_converter))
+        for x in parser.parse() {
+            let (id, _, values) = x?;
+
+            match id.try_into() {
+                Ok(RowType::RowA) => data.push(self.create_instance(values, &auto_increment, &mut pk_type_converter)),
+                _ => {
+                    let transport_type = data.last_mut().ok_or("Type A row missing.")?;
+
+                    match id.try_into() {
+                        Ok(RowType::RowB) => update_current_language(values, &mut current_language),
+                        Ok(RowType::RowC) => set_product_class_name(values, &mut data, current_language),
+                        Ok(RowType::RowD) => {}
+                        Ok(RowType::RowE) => set_category_name(values, transport_type, current_language),
+                        Ok(RowType::RowF) => {} // TODO: Use information, currently not used
+                        _ => unreachable!(),
+                    }
+                }
+            }
+        }
+
+        let data = TransportType::vec_to_map(data);
+        Ok((data, pk_type_converter))
+    }
+
+    fn parse(
+        &self,
+        path: &str,
+    ) -> Result<TransportTypeAndTypeConverter, Box<dyn Error>> {
+        log::info!("Parsing {}...", self.file);
+        let parser = FileParser::new(&format!("{path}/ZUGART"), Arc::clone(&self.row_parser))?;
+        let (data, pk_type_converter) = self.row_converter(parser)?;
+        Ok((ResourceStorage::new(data), pk_type_converter))
+    }
+
+    fn create_instance(
+        &self,
+        mut values: Vec<ParsedValue>,
+        auto_increment: &AutoIncrement,
+        pk_type_converter: &mut FxHashMap<String, i32>,
+    ) -> TransportType {
+        let designation: String = values.remove(0).into();
+        let product_class_id: i16 = values.remove(0).into();
+        let tarrif_group: String = values.remove(0).into();
+        let output_control: i16 = values.remove(0).into();
+        let short_name: String = values.remove(0).into();
+        let surchage: i16 = values.remove(0).into();
+        let flag: String = values.remove(0).into();
+
+        let id = auto_increment.next();
+
+        if let Some(previous) = pk_type_converter.insert(designation.to_owned(), id) {
+            log::error!(
+            "Warning: previous id {previous} for {designation}. The designation, {designation}, is not unique."
+        );
+        };
+        TransportType::new(
+            id,
+            designation.to_owned(),
+            product_class_id,
+            tarrif_group,
+            output_control,
+            short_name,
+            surchage,
+            flag,
+        )
+    }
+}
+
+
+pub fn parse(
+    path: &str,
+) -> Result<TransportTypeAndTypeConverter, Box<dyn Error>> {
+    TransportTypeParser::new().parse(path)
 }
 
 // ------------------------------------------------------------------------------------------------
 // --- Data Processing Functions
 // ------------------------------------------------------------------------------------------------
-
-fn create_instance(
-    mut values: Vec<ParsedValue>,
-    auto_increment: &AutoIncrement,
-    pk_type_converter: &mut FxHashMap<String, i32>,
-) -> TransportType {
-    let designation: String = values.remove(0).into();
-    let product_class_id: i16 = values.remove(0).into();
-    let tarrif_group: String = values.remove(0).into();
-    let output_control: i16 = values.remove(0).into();
-    let short_name: String = values.remove(0).into();
-    let surchage: i16 = values.remove(0).into();
-    let flag: String = values.remove(0).into();
-
-    let id = auto_increment.next();
-
-    if let Some(previous) = pk_type_converter.insert(designation.to_owned(), id) {
-        log::error!(
-            "Warning: previous id {previous} for {designation}. The designation, {designation}, is not unique."
-        );
-    };
-    TransportType::new(
-        id,
-        designation.to_owned(),
-        product_class_id,
-        tarrif_group,
-        output_control,
-        short_name,
-        surchage,
-        flag,
-    )
-}
 
 fn set_product_class_name(
     mut values: Vec<ParsedValue>,

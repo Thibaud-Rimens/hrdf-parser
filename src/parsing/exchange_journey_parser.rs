@@ -25,7 +25,12 @@
 /// File(s) read by the parser:
 /// UMSTEIGZ
 use std::error::Error;
-
+use std::sync::Arc;
+use nom::bytes::complete::take;
+use nom::character::complete::space1;
+use nom::combinator::opt;
+use nom::Parser;
+use nom::sequence::preceded;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
@@ -35,92 +40,131 @@ use crate::{
     storage::ResourceStorage,
     utils::AutoIncrement,
 };
+use crate::parsing::exchange_administration_parser::ExchangeTimeAdministrationParser;
+use crate::parsing::ParserFnReturn;
 
-fn exchange_journey_row_parser() -> RowParser {
-    RowParser::new(vec![
-        // This row is used to create a JourneyExchangeTime instance.
-        RowDefinition::from(vec![
-            ColumnDefinition::new(1, 7, ExpectedType::Integer32),
-            ColumnDefinition::new(9, 14, ExpectedType::Integer32),
-            ColumnDefinition::new(16, 21, ExpectedType::String),
-            ColumnDefinition::new(23, 28, ExpectedType::Integer32),
-            ColumnDefinition::new(30, 35, ExpectedType::String),
-            ColumnDefinition::new(37, 39, ExpectedType::Integer16),
-            ColumnDefinition::new(40, 40, ExpectedType::String),
-            ColumnDefinition::new(42, 47, ExpectedType::OptionInteger32),
-        ]),
-    ])
+pub struct ExchangeTimeJourneyParser {
+    file: String,
+    row_parser: Arc<RowParser>
 }
-fn exchange_journey_row_converter(
-    parser: FileParser,
-    journeys_pk_type_converter: &FxHashSet<JourneyId>,
-) -> Result<FxHashMap<i32, ExchangeTimeJourney>, Box<dyn Error>> {
-    let auto_increment = AutoIncrement::new();
 
-    let data = parser
-        .parse()
-        .map(|x| {
-            x.and_then(|(_, _, values)| {
-                create_instance(values, &auto_increment, journeys_pk_type_converter)
+impl ExchangeTimeJourneyParser {
+    fn get_parser_1(input: &str) -> ParserFnReturn {
+        let mut parser = (
+            take(7usize),
+            preceded(space1, take(6usize)),
+            preceded(space1, take(6usize)),
+            preceded(space1, take(6usize)),
+            preceded(space1, take(6usize)),
+            preceded(space1, take(3usize)),
+            take(1usize),
+            preceded(space1, opt(take(6usize))),
+        );
+        let (i2, data) = parser.parse(input)?;
+        Ok((i2, vec![data.0, data.1, data.2, data.3, data.4, data.5, data.6, data.7.unwrap_or("")]))
+    }
+    pub fn new() -> Self {
+        Self {
+            file: "UMSTEIGZ".to_string(),
+            row_parser: Arc::new(RowParser::new(vec![
+                RowDefinition::new(
+                    0,
+                    vec![
+                        ColumnDefinition::new(ExpectedType::Integer32),
+                        ColumnDefinition::new(ExpectedType::Integer32),
+                        ColumnDefinition::new(ExpectedType::String),
+                        ColumnDefinition::new(ExpectedType::Integer32),
+                        ColumnDefinition::new(ExpectedType::String),
+                        ColumnDefinition::new(ExpectedType::Integer16),
+                        ColumnDefinition::new(ExpectedType::String),
+                        ColumnDefinition::new(ExpectedType::OptionInteger32),
+                    ],
+                    Self::get_parser_1
+                )
+            ]))
+        }
+    }
+
+    fn row_converter(
+        &self,
+        parser: FileParser,
+        journeys_pk_type_converter: &FxHashSet<JourneyId>,
+    ) -> Result<FxHashMap<i32, ExchangeTimeJourney>, Box<dyn Error>> {
+        let auto_increment = AutoIncrement::new();
+
+        let data = parser
+            .parse()
+            .map(|x| {
+                x.and_then(|(_, _, values)| {
+                    self.create_instance(values, &auto_increment, journeys_pk_type_converter)
+                })
             })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let data = ExchangeTimeJourney::vec_to_map(data);
-    Ok(data)
+            .collect::<Result<Vec<_>, _>>()?;
+        let data = ExchangeTimeJourney::vec_to_map(data);
+        Ok(data)
+    }
+
+    fn parse(
+        &self,
+        path: &str,
+        journeys_pk_type_converter: &FxHashSet<JourneyId>,
+    ) -> Result<ResourceStorage<ExchangeTimeJourney>, Box<dyn Error>> {
+        log::info!("Parsing {}...", self.file);
+        let parser = FileParser::new(&format!("{}/{}", path, self.file), Arc::clone(&self.row_parser))?;
+        let data = self.row_converter(parser, journeys_pk_type_converter)?;
+        Ok(ResourceStorage::new(data))
+    }
+
+    fn create_instance(
+        &self,
+        mut values: Vec<ParsedValue>,
+        auto_increment: &AutoIncrement,
+        journeys_pk_type_converter: &FxHashSet<JourneyId>,
+    ) -> Result<ExchangeTimeJourney, Box<dyn Error>> {
+        let stop_id: i32 = values.remove(0).into();
+        let journey_id_1: i32 = values.remove(0).into();
+        let administration_1: String = values.remove(0).into();
+        let journey_id_2: i32 = values.remove(0).into();
+        let administration_2: String = values.remove(0).into();
+        let duration: i16 = values.remove(0).into();
+        let is_guaranteed: String = values.remove(0).into();
+        let bit_field_id: Option<i32> = values.remove(0).into();
+        
+        let _journey_id_1 = journeys_pk_type_converter
+            .get(&(journey_id_1, administration_1.clone()))
+            .ok_or("Unknown legacy ID")?;
+
+        let _journey_id_2 = journeys_pk_type_converter
+            .get(&(journey_id_2, administration_2.clone()))
+            .ok_or("Unknown legacy ID")?;
+
+        // TODO: I haven't seen an is_guaranteed field in the doc. Check if this makes sense.
+        // Note : There is two spaces in a row in the file, might not be useful but does not break anything
+        // It is present in UMSTEIGL. Mabe a copy/paste leftover
+        let is_guaranteed = is_guaranteed == "!";
+
+        Ok(ExchangeTimeJourney::new(
+            auto_increment.next(),
+            stop_id,
+            (journey_id_1, administration_1),
+            (journey_id_2, administration_2),
+            duration,
+            is_guaranteed,
+            bit_field_id,
+        ))
+    }
 }
 
 pub fn parse(
     path: &str,
     journeys_pk_type_converter: &FxHashSet<JourneyId>,
 ) -> Result<ResourceStorage<ExchangeTimeJourney>, Box<dyn Error>> {
-    log::info!("Parsing UMSTEIGZ...");
-    let row_parser = exchange_journey_row_parser();
-    let parser = FileParser::new(&format!("{path}/UMSTEIGZ"), row_parser)?;
-    let data = exchange_journey_row_converter(parser, journeys_pk_type_converter)?;
-
-    Ok(ResourceStorage::new(data))
+    ExchangeTimeJourneyParser::new().parse(path, journeys_pk_type_converter)
 }
 
 // ------------------------------------------------------------------------------------------------
 // --- Data Processing Functions
 // ------------------------------------------------------------------------------------------------
-
-fn create_instance(
-    mut values: Vec<ParsedValue>,
-    auto_increment: &AutoIncrement,
-    journeys_pk_type_converter: &FxHashSet<JourneyId>,
-) -> Result<ExchangeTimeJourney, Box<dyn Error>> {
-    let stop_id: i32 = values.remove(0).into();
-    let journey_id_1: i32 = values.remove(0).into();
-    let administration_1: String = values.remove(0).into();
-    let journey_id_2: i32 = values.remove(0).into();
-    let administration_2: String = values.remove(0).into();
-    let duration: i16 = values.remove(0).into();
-    let is_guaranteed: String = values.remove(0).into();
-    let bit_field_id: Option<i32> = values.remove(0).into();
-
-    let _journey_id_1 = journeys_pk_type_converter
-        .get(&(journey_id_1, administration_1.clone()))
-        .ok_or("Unknown legacy ID")?;
-
-    let _journey_id_2 = journeys_pk_type_converter
-        .get(&(journey_id_2, administration_2.clone()))
-        .ok_or("Unknown legacy ID")?;
-
-    // TODO: I haven't seen an is_guaranteed field in the doc. Check if this makes sense.
-    // It is present in UMSTEIGL. Mabe a copy/paste leftover
-    let is_guaranteed = is_guaranteed == "!";
-
-    Ok(ExchangeTimeJourney::new(
-        auto_increment.next(),
-        stop_id,
-        (journey_id_1, administration_1),
-        (journey_id_2, administration_2),
-        duration,
-        is_guaranteed,
-        bit_field_id,
-    ))
-}
 
 #[cfg(test)]
 mod tests {
@@ -135,8 +179,9 @@ mod tests {
             "8501008 023057 000011 001671 000011 002  000010 Genève".to_string(),
             "8501120 001929 000011 024256 000011 999         Lausanne".to_string(),
         ];
+        let exchange_time_journey_parser = ExchangeTimeJourneyParser::new();
         let parser = FileParser {
-            row_parser: exchange_journey_row_parser(),
+            row_parser: exchange_time_journey_parser.row_parser.clone(),
             rows,
         };
         let mut parser_iterator = parser.parse();
@@ -184,8 +229,9 @@ mod tests {
             "8501008 023057 000011 001671 000011 002  000010 Genève".to_string(),
             "8501120 001929 000011 024256 000011 999         Lausanne".to_string(),
         ];
+        let exchange_time_journey_parser = ExchangeTimeJourneyParser::new();
         let parser = FileParser {
-            row_parser: exchange_journey_row_parser(),
+            row_parser: exchange_time_journey_parser.row_parser.clone(),
             rows,
         };
 
@@ -196,7 +242,7 @@ mod tests {
         journeys_pk_type_converter.insert((1671, "000011".to_string()));
         journeys_pk_type_converter.insert((24256, "000011".to_string()));
 
-        let data = exchange_journey_row_converter(parser, &journeys_pk_type_converter).unwrap();
+        let data = exchange_time_journey_parser.row_converter(parser, &journeys_pk_type_converter).unwrap();
         // First row
         let attribute = data.get(&1).unwrap();
         let reference = r#"

@@ -47,19 +47,21 @@
 /// ATTRIBUT_DE, ATTRIBUT_EN, ATTRIBUT_FR, ATTRIBUT_IT
 /// These files were suppressed in 2.0.7
 use std::{error::Error, str::FromStr};
-
+use std::sync::Arc;
+use nom::bytes::complete::{tag, take, take_till};
+use nom::bytes::is_not;
+use nom::character::complete::{char, digit1, space1};
+use nom::combinator::{recognize, rest};
+use nom::Parser;
+use nom::sequence::{delimited, preceded};
 use rustc_hash::FxHashMap;
 
-use crate::{
-    Version,
-    models::{Attribute, Language, Model},
-    parsing::{
-        AdvancedRowMatcher, ColumnDefinition, ExpectedType, FastRowMatcher, FileParser,
-        ParsedValue, RowDefinition, RowParser,
-    },
-    storage::ResourceStorage,
-    utils::AutoIncrement,
-};
+use crate::{models::{Attribute, Language, Model}, parsing::{
+    ColumnDefinition, ExpectedType, FileParser,
+    ParsedValue, RowDefinition, RowParser,
+}, storage::ResourceStorage, utils::AutoIncrement};
+
+use crate::parsing::ParserFnReturn;
 
 type AttributeAndTypeConverter = (ResourceStorage<Attribute>, FxHashMap<String, i32>);
 type FxHashMapsAndTypeConverter = (FxHashMap<i32, Attribute>, FxHashMap<String, i32>);
@@ -71,55 +73,102 @@ enum RowType {
     RowD = 4,
 }
 
-fn attribute_row_parser(version: Version) -> Result<RowParser, Box<dyn Error>> {
-    let row_parser = RowParser::new(vec![
-        // This row is used to create an Attribute instance.
-        RowDefinition::new(
-            RowType::RowA as i32,
-            Box::new(AdvancedRowMatcher::new(
-                r"^.{2} [0-9] [0-9 ]{3} [0-9 ]{2}$",
-            )?),
-            vec![
-                ColumnDefinition::new(1, 2, ExpectedType::String),
-                ColumnDefinition::new(4, 4, ExpectedType::Integer16),
-                ColumnDefinition::new(6, 8, ExpectedType::Integer16),
-                ColumnDefinition::new(10, 11, ExpectedType::Integer16),
-            ],
-        ),
-        // This row is ignored.
-        RowDefinition::new(
-            RowType::RowB as i32,
-            Box::new(FastRowMatcher::new(1, 1, "#", true)),
-            vec![ColumnDefinition::new(1, -1, ExpectedType::String)],
-        ),
-        // This row indicates the language for translations in the section that follows it.
-        RowDefinition::new(
-            RowType::RowC as i32,
-            Box::new(FastRowMatcher::new(1, 1, "<", true)),
-            vec![ColumnDefinition::new(1, -1, ExpectedType::String)],
-        ),
-        // This row contains the description in a specific language.
-        // The format changed in V 2.0.7 and now the description starts at column 5 instead of 4
-        RowDefinition::new(
-            RowType::RowD as i32,
-            Box::new(AdvancedRowMatcher::new(r"^.{2} .+$")?),
-            vec![
-                ColumnDefinition::new(1, 2, ExpectedType::String),
-                match version {
-                    Version::V_5_40_41_2_0_4
-                    | Version::V_5_40_41_2_0_5
-                    | Version::V_5_40_41_2_0_6 => {
-                        ColumnDefinition::new(4, -1, ExpectedType::String)
-                    }
-                    Version::V_5_40_41_2_0_7 => ColumnDefinition::new(5, -1, ExpectedType::String),
-                },
-            ],
-        ),
-    ]);
-    Ok(row_parser)
+impl TryFrom<i32> for RowType {
+    type Error = ();
+    fn try_from(v: i32) -> Result<Self, Self::Error> {
+        match v {
+            x if x == RowType::RowA as i32 => Ok(RowType::RowA),
+            x if x == RowType::RowB as i32 => Ok(RowType::RowB),
+            x if x == RowType::RowC as i32 => Ok(RowType::RowC),
+            x if x == RowType::RowD as i32 => Ok(RowType::RowD),
+            _ => Err(()),
+        }
+    }
 }
 
-fn attribute_row_converter(
+pub struct AttributeParser {
+    file: String,
+    row_parser: Arc<RowParser>
+}
+
+impl AttributeParser {
+    fn get_parser_1(input: &'_ str) -> ParserFnReturn<'_> {
+        let mut parser = (
+            take(2usize),
+            preceded(space1, digit1),
+            preceded(space1, digit1),
+            preceded(space1, digit1)
+        );
+        let (input, data) = parser.parse(input)?;
+        Ok((input, vec![data.0, data.1, data.2, data.3]))
+    }
+    fn get_parser_2(input: &'_ str) -> ParserFnReturn<'_> {
+        let mut parser = recognize((char('#'), rest));
+        let (input, data) = parser.parse(input)?;
+        Ok((input, vec![data]))
+    }
+    fn get_parser_3(input: &'_ str) -> ParserFnReturn<'_> {
+        let mut parser = recognize((char('<'), rest));
+        let (input, data) = parser.parse(input)?;
+        Ok((input, vec![data]))
+    }
+    fn get_parser_4(input: &'_ str) -> ParserFnReturn<'_> {
+        let mut parser = (
+            take_till(|c| c == ' '),
+           (space1, rest)
+        );
+        let (input, data) = parser.parse(input)?;
+        Ok((input, vec![data.0, data.1.1]))
+    }
+    pub fn new() -> Self {
+        Self {
+            file: "ATTRIBUT".to_string(),
+            row_parser: Arc::new(RowParser::new(vec![
+                RowDefinition::new(
+                    RowType::RowA as i32,
+                    vec![
+                        ColumnDefinition::new(ExpectedType::String),
+                        ColumnDefinition::new(ExpectedType::Integer16),
+                        ColumnDefinition::new(ExpectedType::Integer16),
+                        ColumnDefinition::new(ExpectedType::Integer16),
+                    ],
+                    Self::get_parser_1
+                ),
+                RowDefinition::new(
+                    RowType::RowB as i32,
+                    vec![
+                        ColumnDefinition::new(ExpectedType::String),
+                    ],
+                    Self::get_parser_2
+                ),
+                RowDefinition::new(
+                    RowType::RowC as i32,
+                    vec![
+                        ColumnDefinition::new(ExpectedType::String),
+                    ],
+                    Self::get_parser_3
+                ),
+                RowDefinition::new(
+                    RowType::RowD as i32,
+                    vec![
+                        ColumnDefinition::new(ExpectedType::String),
+                        ColumnDefinition::new(ExpectedType::String)
+                    ],
+                    Self::get_parser_4
+                )
+            ]))
+        }
+    }
+
+    pub fn parse(&self, path: &str) -> Result<AttributeAndTypeConverter, Box<dyn Error>> {
+        log::info!("Parsing {}...", self.file);
+        let parser = FileParser::new(&format!("{}/{}", path, self.file), Arc::clone(&self.row_parser))?;
+        let (data, pk_type_converter) = row_converter(parser)?;
+        Ok((ResourceStorage::new(data), pk_type_converter))
+    }
+}
+
+fn row_converter(
     parser: FileParser,
 ) -> Result<FxHashMapsAndTypeConverter, Box<dyn Error>> {
     let auto_increment = AutoIncrement::new();
@@ -129,30 +178,47 @@ fn attribute_row_converter(
     let mut current_language = Language::default();
 
     for x in parser.parse() {
-        let (id, _, values) = x?;
-        if id == RowType::RowA as i32 {
-            let attribute = create_instance(values, &auto_increment, &mut pk_type_converter);
-            data.insert(attribute.id(), attribute);
-        } else if id == RowType::RowB as i32 {
-            // We discard lines starting with #
-        } else if id == RowType::RowC as i32 {
-            update_current_language(values, &mut current_language)?;
-        } else if id == RowType::RowD as i32 {
-            set_description(values, &pk_type_converter, &mut data, current_language)?;
-        } else {
-            unreachable!()
+        let (id, t, values) = x?;
+        match id.try_into() {
+            Ok(RowType::RowA) => {
+                let attribute = create_instance(values, &auto_increment, &mut pk_type_converter);
+                data.insert(attribute.id(), attribute);
+            },
+            Ok(RowType::RowB) => {},
+            Ok(RowType::RowC) => update_current_language(values, &mut current_language)?,
+            Ok(RowType::RowD) => set_description(values, &pk_type_converter, &mut data, current_language)?,
+            _ => unreachable!()
+
         }
     }
     Ok((data, pk_type_converter))
 }
 
-pub fn parse(version: Version, path: &str) -> Result<AttributeAndTypeConverter, Box<dyn Error>> {
-    log::info!("Parsing ATTRIBUT...");
-    let row_parser = attribute_row_parser(version)?;
-    // The ATTRIBUT file is used instead of ATTRIBUT_* for simplicity's sake.
-    let parser = FileParser::new(&format!("{path}/ATTRIBUT"), row_parser)?;
-    let (data, pk_type_converter) = attribute_row_converter(parser)?;
-    Ok((ResourceStorage::new(data), pk_type_converter))
+fn create_instance(
+    values: Vec<ParsedValue>,
+    auto_increment: &AutoIncrement,
+    pk_type_converter: &mut FxHashMap<String, i32>,
+) -> Attribute {
+    let (designation, stop_scope, main_sorting_priority, secondary_sorting_priority) = row_a_from_parsed_values(values);
+    let id = auto_increment.next();
+
+    if let Some(previous) = pk_type_converter.insert(designation.to_owned(), id) {
+        log::error!(
+            "Error: previous id {previous} for {designation}. The designation, {designation}, is not unique."
+        );
+    }
+
+    Attribute::new(
+        id,
+        designation.to_owned(),
+        stop_scope,
+        main_sorting_priority,
+        secondary_sorting_priority,
+    )
+}
+
+pub fn parse(path: &str) -> Result<AttributeAndTypeConverter, Box<dyn Error>> {
+    AttributeParser::new().parse(path)
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -172,28 +238,9 @@ fn row_a_from_parsed_values(mut values: Vec<ParsedValue>) -> (String, i16, i16, 
     )
 }
 
-fn create_instance(
-    values: Vec<ParsedValue>,
-    auto_increment: &AutoIncrement,
-    pk_type_converter: &mut FxHashMap<String, i32>,
-) -> Attribute {
-    let (designation, stop_scope, main_sorting_priority, secondary_sorting_priority) =
-        row_a_from_parsed_values(values);
-    let id = auto_increment.next();
-
-    if let Some(previous) = pk_type_converter.insert(designation.to_owned(), id) {
-        log::error!(
-            "Error: previous id {previous} for {designation}. The designation, {designation}, is not unique."
-        );
-    }
-
-    Attribute::new(
-        id,
-        designation.to_owned(),
-        stop_scope,
-        main_sorting_priority,
-        secondary_sorting_priority,
-    )
+fn row_c_from_parsed_values(mut values: Vec<ParsedValue>) -> String {
+    let language: String = values.remove(0).into();
+    language
 }
 
 fn row_d_from_parsed_values(mut values: Vec<ParsedValue>) -> (String, String) {
@@ -201,6 +248,10 @@ fn row_d_from_parsed_values(mut values: Vec<ParsedValue>) -> (String, String) {
     let description: String = values.remove(0).into();
     (legacy_id, description)
 }
+
+// ------------------------------------------------------------------------------------------------
+// --- Helper Functions
+// ------------------------------------------------------------------------------------------------
 
 fn set_description(
     values: Vec<ParsedValue>,
@@ -219,15 +270,6 @@ fn set_description(
     Ok(())
 }
 
-// ------------------------------------------------------------------------------------------------
-// --- Helper Functions
-// ------------------------------------------------------------------------------------------------
-
-fn row_c_from_parsed_values(mut values: Vec<ParsedValue>) -> String {
-    let language: String = values.remove(0).into();
-    language
-}
-
 fn update_current_language(
     values: Vec<ParsedValue>,
     current_language: &mut Language,
@@ -244,6 +286,7 @@ fn update_current_language(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     // Note this useful idiom: importing names from outer (for mod tests) scope.
     use super::*;
     use crate::parsing::tests::get_json_values;
@@ -255,11 +298,13 @@ mod tests {
             "VR VELOS: Reservation obligatory".to_string(),
             "2  2nd class only".to_string(),
         ];
+        let attribute_parser = AttributeParser::new();
         let parser = FileParser {
-            row_parser: attribute_row_parser(Version::V_5_40_41_2_0_6).unwrap(),
+            row_parser: attribute_parser.row_parser.clone(),
             rows: rows.clone(),
         };
         let mut parser_iterator = parser.parse();
+
 
         let (id, _, parsed_values) = parser_iterator.next().unwrap().unwrap();
         assert_eq!(id, RowType::RowD as i32);
@@ -279,9 +324,10 @@ mod tests {
             "VR  VELOS: Reservation obligatory".to_string(),
             "2   2nd class only".to_string(),
         ];
+        let attribute_parser = AttributeParser::new();
         let parser = FileParser {
-            row_parser: attribute_row_parser(Version::V_5_40_41_2_0_7).unwrap(),
-            rows,
+            row_parser: attribute_parser.row_parser.clone(),
+            rows: rows.clone(),
         };
         let mut parser_iterator = parser.parse();
         let (id, _, parsed_values) = parser_iterator.next().unwrap().unwrap();
@@ -299,9 +345,10 @@ mod tests {
     #[test]
     fn parser_row_a_v207() {
         let rows = vec!["1  0   1  5".to_string(), "GR 0   6  3".to_string()];
+        let attribute_parser = AttributeParser::new();
         let parser = FileParser {
-            row_parser: attribute_row_parser(Version::V_5_40_41_2_0_7).unwrap(),
-            rows,
+            row_parser: attribute_parser.row_parser.clone(),
+            rows: rows.clone(),
         };
         let mut parser_iterator = parser.parse();
         let (id, _, parsed_values) = parser_iterator.next().unwrap().unwrap();
@@ -335,11 +382,13 @@ mod tests {
             "<eng>".to_string(),
             "GK  Possible customs check, please allow extra time".to_string(),
         ];
+        let attribute_parser = AttributeParser::new();
         let parser = FileParser {
-            row_parser: attribute_row_parser(Version::V_5_40_41_2_0_7).unwrap(),
-            rows,
+            row_parser: Arc::clone(&attribute_parser.row_parser),
+            rows: rows.clone(),
         };
-        let (data, pk_type_converter) = attribute_row_converter(parser).unwrap();
+
+        let (data, pk_type_converter) = row_converter(parser).unwrap();
         assert_eq!(*pk_type_converter.get("GK").unwrap(), 1);
         let attribute = data.get(&1).unwrap();
         let reference = r#"
@@ -363,9 +412,10 @@ mod tests {
     #[test]
     fn parser_row_b_v207() {
         let rows = vec!["# PG PG PG".to_string()];
+        let attribute_parser = AttributeParser::new();
         let parser = FileParser {
-            row_parser: attribute_row_parser(Version::V_5_40_41_2_0_7).unwrap(),
-            rows,
+            row_parser: attribute_parser.row_parser.clone(),
+            rows: rows.clone(),
         };
         let mut parser_iterator = parser.parse();
         let (id, _, mut parsed_values) = parser_iterator.next().unwrap().unwrap();
@@ -383,9 +433,10 @@ mod tests {
             "<eng>".to_string(),
             "<text>".to_string(),
         ];
+        let attribute_parser = AttributeParser::new();
         let parser = FileParser {
-            row_parser: attribute_row_parser(Version::V_5_40_41_2_0_7).unwrap(),
-            rows,
+            row_parser: attribute_parser.row_parser.clone(),
+            rows: rows.clone(),
         };
         let mut parser_iterator = parser.parse();
         let (id, _, parsed_values) = parser_iterator.next().unwrap().unwrap();

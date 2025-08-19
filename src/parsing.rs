@@ -15,6 +15,11 @@ mod through_service_parser;
 mod timetable_metadata_parser;
 mod transport_company_parser;
 mod transport_type_parser;
+mod coordinate_parser;
+mod exchange_priority_parser;
+mod exchange_flag_parser;
+mod exchange_time_parser;
+mod description_parser;
 
 pub use attribute_parser::parse as load_attributes;
 pub use bit_field_parser::parse as load_bit_fields;
@@ -39,18 +44,25 @@ use std::{
     fs::File,
     io::{self, Read, Seek},
 };
+use std::sync::Arc;
+use nom::{
+    IResult,
+};
 
-use regex::Regex;
+use serde_json::{Number, Value};
 
+#[derive(Clone, Debug)]
 pub enum ExpectedType {
     Float,
     Integer16,
     Integer32,
     String,
+    OptionInteger16,
     OptionInteger32,
 }
 
 #[derive(Debug)]
+#[derive(PartialEq)]
 pub enum ParsedValue {
     Float(f64),
     Integer16(i16),
@@ -110,144 +122,58 @@ impl From<ParsedValue> for Option<i32> {
     }
 }
 
-// ------------------------------------------------------------------------------------------------
-// --- RowMatcher
-// ------------------------------------------------------------------------------------------------
-
-pub trait RowMatcher {
-    fn match_row(&self, row: &str) -> bool;
-}
-
-// ------------------------------------------------------------------------------------------------
-// --- FastRowMatcher
-// ------------------------------------------------------------------------------------------------
-
-pub struct FastRowMatcher {
-    // 1-based indexing
-    start: usize,
-    length: usize,
-    value: String,
-    should_equal_value: bool,
-}
-
-impl FastRowMatcher {
-    pub fn new(start: usize, length: usize, value: &str, should_equal_value: bool) -> Self {
-        Self {
-            start,
-            length,
-            value: value.to_string(),
-            should_equal_value,
+impl From<ParsedValue> for Value {
+    #[track_caller]
+    fn from(value: ParsedValue) -> Value {
+        match value {
+            ParsedValue::Float(x) => {
+                Number::from_f64(x)
+                    .map(Value::Number)
+                    .unwrap_or_else(|| panic!("Non-finite float (NaN/±Inf) not allowed in JSON"))
+            }
+            ParsedValue::Integer16(x)       => Value::from(x),
+            ParsedValue::Integer32(x)       => Value::from(x),
+            ParsedValue::String(s)          => Value::from(s),
+            ParsedValue::OptionInteger32(o) => match o {
+                Some(n) => Value::from(n),
+                None    => Value::Null,
+            },
+            ParsedValue::OptionInteger16(o) => match o {
+                Some(n) => Value::from(n),
+                None    => Value::Null,
+            },
         }
     }
 }
 
-impl RowMatcher for FastRowMatcher {
-    fn match_row(&self, row: &str) -> bool {
-        let start = self.start - 1;
-
-        // Info: if the start index is after characters longer than 1 byte, the code will not function correctly.
-        // This is not a problem, as the start index is always at the beginning of the
-        // string, where there is no character requiring more than 1 byte.
-        // let target_value = &row[start..(start + self.length)];
-        //
-        // Above is the old way of parsing. This is wrong for UTF-8 chars that can have more than
-        // one byte.
-        //
-        // This is the correct way to go. If for some reason an UTF-8 char is located somewhere
-        // before start the matching will fail, same if the char is non UTF-8. This method is
-        // slower obviously but not that much. In tests adds about 10% time
-        let target_value: String = row.chars().skip(start).take(self.length).collect();
-        self.should_equal_value == (target_value == self.value)
-    }
-}
-
-// ------------------------------------------------------------------------------------------------
-// --- AdvancedRowMatcher
-// ------------------------------------------------------------------------------------------------
-
-pub struct AdvancedRowMatcher {
-    re: Regex,
-}
-
-impl AdvancedRowMatcher {
-    pub fn new(re: &str) -> Result<Self, Box<dyn Error>> {
-        Ok(Self {
-            re: Regex::new(re)?,
-        })
-    }
-}
-
-impl RowMatcher for AdvancedRowMatcher {
-    fn match_row(&self, row: &str) -> bool {
-        self.re.is_match(row)
-    }
-}
-
-// ------------------------------------------------------------------------------------------------
-// --- ColumnDefinition
-// ------------------------------------------------------------------------------------------------
-
+#[derive(Clone, Debug)]
 pub struct ColumnDefinition {
-    // 1-based indexing
-    start: usize,
-    // 1-based indexing
-    stop: isize,
-    expected_type: ExpectedType,
+    expected: ExpectedType,
 }
 
 impl ColumnDefinition {
-    pub fn new(start: usize, stop: isize, expected_type: ExpectedType) -> Self {
-        Self {
-            start,
-            stop,
-            expected_type,
-        }
+    pub fn new (expected: ExpectedType) -> Self {
+        Self { expected }
     }
 }
 
-// ------------------------------------------------------------------------------------------------
-// --- RowDefinition
-// ------------------------------------------------------------------------------------------------
+pub type ParserFnReturn<'a> = IResult<&'a str, Vec<&'a str>>;
+pub type ParserFn = for<'a> fn(&'a str) -> ParserFnReturn<'a>;
 
-type RowConfiguration = Vec<ColumnDefinition>;
-
+#[derive(Clone, Debug)]
 pub struct RowDefinition {
-    id: i32,
-    row_matcher: Option<Box<dyn RowMatcher>>,
-    row_configuration: RowConfiguration,
+    pub id: i32,
+    pub definition: Vec<ColumnDefinition>,
+    pub parser: ParserFn
 }
 
 impl RowDefinition {
-    pub fn new(
-        id: i32,
-        row_matcher: Box<dyn RowMatcher>,
-        row_configuration: RowConfiguration,
-    ) -> Self {
-        Self {
-            id,
-            row_matcher: Some(row_matcher),
-            row_configuration,
-        }
+    pub fn new (id: i32, definition: Vec<ColumnDefinition>, parser: ParserFn) -> Self {
+        Self { id, definition, parser }
     }
 }
 
-impl From<RowConfiguration> for RowDefinition {
-    fn from(row_configuration: RowConfiguration) -> Self {
-        Self {
-            id: 1,
-            row_matcher: None,
-            row_configuration,
-        }
-    }
-}
-
-// ------------------------------------------------------------------------------------------------
-// --- RowParser
-// ------------------------------------------------------------------------------------------------
-
-// (RowDefinition.id, number of bytes read, values parsed from the row)
-type ParsedRow = (i32, u64, Vec<ParsedValue>);
-
+#[derive(Clone, Debug)]
 pub struct RowParser {
     row_definitions: Vec<RowDefinition>,
 }
@@ -258,82 +184,53 @@ impl RowParser {
     }
 
     fn parse(&self, row: &str) -> Result<ParsedRow, Box<dyn Error>> {
-        let row_definition = self.row_definition(row)?;
-        // 2 bytes for \r\n
-        let bytes_read = row.len() as u64 + 2;
-        let values = row_definition
-            .row_configuration
-            .iter()
-            .map(|column_definition| {
-                let start = column_definition.start - 1;
-                let stop = if column_definition.stop == -1 {
-                    row.chars().count()
-                } else {
-                    column_definition.stop as usize
-                };
+        let mut parsed_row: Option<ParsedRow> = None;
+        for row_definition in self.row_definitions.iter() {
+            if let Ok((_, values)) = (row_definition.parser)(row) {
+                let values: Vec<&str> = values.iter().map(|x| x.trim()).collect();
+                let mut parsed_values: Vec<ParsedValue> = Vec::with_capacity(values.len());
+                for (value, col_def) in values.iter().zip(row_definition.definition.iter()) {
+                    let parsed_value = match col_def.expected {
+                        ExpectedType::Float => ParsedValue::Float(value.parse()?),
+                        ExpectedType::Float => ParsedValue::Float(value.parse()?),
+                        ExpectedType::Integer16 => ParsedValue::Integer16(value.parse()?),
+                        ExpectedType::Integer32 => ParsedValue::Integer32(value.parse()?),
+                        ExpectedType::String => ParsedValue::String(value.to_string()),
+                        ExpectedType::OptionInteger32 => ParsedValue::OptionInteger32(value.parse().ok()),
+                        ExpectedType::OptionInteger16 => ParsedValue::OptionInteger16(value.parse().ok()),
+                    };
+                    parsed_values.push(parsed_value);
+                }
 
-                // Converts start/stop columns into real indexes.
-                let start = row
-                    .char_indices()
-                    .map(|(i, _)| i)
-                    .nth(start)
-                    .ok_or("The start column is out of range.")?;
-                let stop = if let Some(i) = row.char_indices().map(|(i, _)| i).nth(stop) {
-                    i
-                } else {
-                    row.len()
-                };
-
-                let value = row[start..stop].trim();
-
-                let result = match column_definition.expected_type {
-                    ExpectedType::Float => ParsedValue::Float(value.parse()?),
-                    ExpectedType::Integer16 => ParsedValue::Integer16(value.parse()?),
-                    ExpectedType::Integer32 => ParsedValue::Integer32(value.parse()?),
-                    // The "value" variable is a &str, so it's impossible to fail by converting it to a String.
-                    ExpectedType::String => ParsedValue::String(value.to_owned()),
-                    ExpectedType::OptionInteger32 => {
-                        ParsedValue::OptionInteger32(value.parse().ok())
-                    }
-                };
-                Ok::<ParsedValue, Box<dyn Error>>(result)
-            })
-            .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
-        Ok((row_definition.id, bytes_read, values))
-    }
-
-    fn row_definition(&self, row: &str) -> Result<&RowDefinition, Box<dyn Error>> {
-        if self.row_definitions.len() == 1 {
-            return Ok(&self.row_definitions[0]);
+                // 2 bytes for \r\n
+                let bytes_read = row.len() as u64 + 2;
+                parsed_row = Some((row_definition.id, bytes_read, parsed_values));
+                break;
+            }
         }
 
-        let matched_row_definition = self
-            .row_definitions
-            .iter()
-            // unwrap: "row_matcher" is guaranteed to always have a value when there are multiple row definitions.
-            .find(|row_definition| row_definition.row_matcher.as_ref().unwrap().match_row(row));
-
-        matched_row_definition.ok_or(format!("This type of row is unknown:\n{}", row).into())
+        parsed_row.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "RowType not found!")
+        }).map_err(|e| e.into())
     }
 }
 
-// ------------------------------------------------------------------------------------------------
-// --- FileParser
-// ------------------------------------------------------------------------------------------------
+// (RowDefinition.id, number of bytes read, values parsed from the row)
+type ParsedRow = (i32, u64, Vec<ParsedValue>);
 
 pub struct FileParser {
     rows: Vec<String>,
-    row_parser: RowParser,
+    row_parser: Arc<RowParser>,
 }
 
 impl FileParser {
-    pub fn new(path: &str, row_parser: RowParser) -> io::Result<Self> {
+    pub fn new(path: &str, row_parser: Arc<RowParser>) -> io::Result<Self> {
         Self::new_with_bytes_offset(path, row_parser, 0)
     }
 
     pub fn new_with_bytes_offset(
         path: &str,
-        row_parser: RowParser,
+        row_parser: Arc<RowParser>,
         bytes_offset: u64,
     ) -> io::Result<Self> {
         let rows = Self::read_lines(path, bytes_offset)?;
@@ -350,7 +247,7 @@ impl FileParser {
         Ok(lines)
     }
 
-    pub fn parse(&self) -> ParsedRowIterator {
+    pub fn parse(&'_ self) -> ParsedRowIterator<'_> {
         ParsedRowIterator {
             rows_iter: self.rows.iter(),
             row_parser: &self.row_parser,
@@ -362,6 +259,7 @@ impl FileParser {
 // --- ParsedRowIterator
 // ------------------------------------------------------------------------------------------------
 
+#[derive(Debug)]
 pub struct ParsedRowIterator<'a> {
     rows_iter: std::slice::Iter<'a, String>,
     row_parser: &'a RowParser,

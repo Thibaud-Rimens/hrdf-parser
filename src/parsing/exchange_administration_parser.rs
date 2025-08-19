@@ -23,7 +23,12 @@
 /// File(s) read by the parser:
 /// UMSTEIGV
 use std::error::Error;
-
+use std::sync::Arc;
+use nom::bytes::complete::take;
+use nom::character::complete::space1;
+use nom::combinator::{opt, rest};
+use nom::Parser;
+use nom::sequence::preceded;
 use rustc_hash::FxHashMap;
 
 use crate::{
@@ -33,37 +38,83 @@ use crate::{
     utils::AutoIncrement,
 };
 
-fn exchange_administration_row_parser() -> RowParser {
-    RowParser::new(vec![
-        // This row is used to create a AdministrationExchangeTime instance.
-        RowDefinition::from(vec![
-            ColumnDefinition::new(1, 7, ExpectedType::OptionInteger32),
-            ColumnDefinition::new(9, 14, ExpectedType::String),
-            ColumnDefinition::new(16, 21, ExpectedType::String),
-            ColumnDefinition::new(23, 24, ExpectedType::Integer16),
-        ]),
-    ])
-}
-fn exchange_administration_row_converter(
-    parser: FileParser,
-) -> Result<FxHashMap<i32, ExchangeTimeAdministration>, Box<dyn Error>> {
-    let auto_increment = AutoIncrement::new();
+use crate::parsing::ParserFnReturn;
 
-    let data = parser
-        .parse()
-        .map(|x| x.map(|(_, _, values)| create_instance(values, &auto_increment)))
-        .collect::<Result<Vec<_>, _>>()?;
-    let data = ExchangeTimeAdministration::vec_to_map(data);
-    Ok(data)
+pub struct ExchangeTimeAdministrationParser {
+    file: String,
+    row_parser: Arc<RowParser>
 }
+
+impl ExchangeTimeAdministrationParser {
+    fn get_parser_1(input: &str) -> ParserFnReturn {
+        let mut parser = (
+            opt(take(7usize)),
+            preceded(space1, take(6usize)),
+            preceded(space1, take(6usize)),
+            preceded(space1, take(2usize))
+        );
+        let (i2, data) = parser.parse(input)?;
+        Ok((i2, vec![data.0.unwrap_or(""), data.1, data.2, data.3]))
+    }
+    pub fn new() -> Self {
+        Self {
+            file: "UMSTEIGV".to_string(),
+            row_parser: Arc::new(RowParser::new(vec![
+                RowDefinition::new(
+                    0,
+                    vec![
+                        ColumnDefinition::new(ExpectedType::OptionInteger32),
+                        ColumnDefinition::new(ExpectedType::String),
+                        ColumnDefinition::new(ExpectedType::String),
+                        ColumnDefinition::new(ExpectedType::Integer16),
+                    ],
+                    Self::get_parser_1
+                )
+            ]))
+        }
+    }
+
+    fn row_converter(
+        &self,
+        parser: FileParser,
+    ) -> Result<FxHashMap<i32, ExchangeTimeAdministration>, Box<dyn Error>> {
+        let auto_increment = AutoIncrement::new();
+
+        let data = parser
+            .parse()
+            .map(|x| x.map(|(_, _, values)| self.create_instance(values, &auto_increment)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let data = ExchangeTimeAdministration::vec_to_map(data);
+        Ok(data)
+    }
+
+    fn parse(&self, path: &str) -> Result<ResourceStorage<ExchangeTimeAdministration>, Box<dyn Error>> {
+        log::info!("Parsing {}...", self.file);
+        let parser = FileParser::new(&format!("{}/{}", path, self.file), Arc::clone(&self.row_parser))?;
+        let data = self.row_converter(parser)?;
+        Ok(ResourceStorage::new(data))
+    }
+
+    fn create_instance(
+        &self,
+        values: Vec<ParsedValue>,
+        auto_increment: &AutoIncrement,
+    ) -> ExchangeTimeAdministration {
+        let (stop_id, administration_1, administration_2, duration) = row_from_parsed_values(values);
+
+        ExchangeTimeAdministration::new(
+            auto_increment.next(),
+            stop_id,
+            administration_1,
+            administration_2,
+            duration,
+        )
+    }
+}
+
 
 pub fn parse(path: &str) -> Result<ResourceStorage<ExchangeTimeAdministration>, Box<dyn Error>> {
-    log::info!("Parsing UMSTEIGV...");
-    let row_parser = exchange_administration_row_parser();
-    let parser = FileParser::new(&format!("{path}/UMSTEIGV"), row_parser)?;
-    let data = exchange_administration_row_converter(parser)?;
-
-    Ok(ResourceStorage::new(data))
+    ExchangeTimeAdministrationParser::new().parse(path)
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -76,21 +127,6 @@ fn row_from_parsed_values(mut values: Vec<ParsedValue>) -> (Option<i32>, String,
     let administration_2: String = values.remove(0).into();
     let duration: i16 = values.remove(0).into();
     (stop_id, administration_1, administration_2, duration)
-}
-
-fn create_instance(
-    values: Vec<ParsedValue>,
-    auto_increment: &AutoIncrement,
-) -> ExchangeTimeAdministration {
-    let (stop_id, administration_1, administration_2, duration) = row_from_parsed_values(values);
-
-    ExchangeTimeAdministration::new(
-        auto_increment.next(),
-        stop_id,
-        administration_1,
-        administration_2,
-        duration,
-    )
 }
 
 #[cfg(test)]
@@ -108,8 +144,9 @@ mod tests {
             "@@@@@@@ 000793 000873 02".to_string(),
             "8101236 81____ 007000 02 Feldkirch".to_string(),
         ];
+        let exchange_time_administration_parser = ExchangeTimeAdministrationParser::new();
         let parser = FileParser {
-            row_parser: exchange_administration_row_parser(),
+            row_parser: exchange_time_administration_parser.row_parser.clone(),
             rows,
         };
         let mut parser_iterator = parser.parse();
@@ -155,11 +192,12 @@ mod tests {
             "@@@@@@@ 000793 000873 02".to_string(),
             "8101236 81____ 007000 02 Feldkirch".to_string(),
         ];
+        let exchange_time_administration_parser = ExchangeTimeAdministrationParser::new();
         let parser = FileParser {
-            row_parser: exchange_administration_row_parser(),
+            row_parser: exchange_time_administration_parser.row_parser.clone(),
             rows,
         };
-        let data = exchange_administration_row_converter(parser).unwrap();
+        let data = exchange_time_administration_parser.row_converter(parser).unwrap();
         // First row
         let attribute = data.get(&1).unwrap();
         let reference = r#"

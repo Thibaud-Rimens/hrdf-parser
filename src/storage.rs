@@ -72,13 +72,12 @@ impl DataStorage {
         let timetable_metadata = parsing::load_timetable_metadata(path)?;
 
         // Basic data
-        let (attributes, attributes_pk_type_converter) = parsing::load_attributes(version, path)?;
+        let (attributes, attributes_pk_type_converter) = parsing::load_attributes(path)?;
         let (directions, directions_pk_type_converter) = parsing::load_directions(path)?;
         let information_texts = parsing::load_information_texts(path)?;
         let lines = parsing::load_lines(path)?;
         let transport_companies = parsing::load_transport_companies(path)?;
-        let (transport_types, transport_types_pk_type_converter) =
-            parsing::load_transport_types(version, path)?;
+        let (transport_types, transport_types_pk_type_converter) = parsing::load_transport_types(path)?;
 
         // Stop data
         let stop_connections = parsing::load_stop_connections(path, &attributes_pk_type_converter)?;

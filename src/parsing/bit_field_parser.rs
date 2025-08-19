@@ -25,7 +25,11 @@
 /// File(s) read by the parser:
 /// BITFELD
 use std::error::Error;
-
+use std::sync::Arc;
+use nom::bytes::complete::take;
+use nom::character::complete::space1;
+use nom::Parser;
+use nom::sequence::preceded;
 use rustc_hash::FxHashMap;
 
 use crate::{
@@ -34,34 +38,61 @@ use crate::{
     storage::ResourceStorage,
 };
 
-fn bitfield_row_parser() -> RowParser {
-    RowParser::new(vec![
-        // This row is used to create a BitField instance.
-        RowDefinition::from(vec![
-            ColumnDefinition::new(1, 6, ExpectedType::Integer32),
-            ColumnDefinition::new(8, 103, ExpectedType::String),
-        ]),
-    ])
+use crate::parsing::ParserFnReturn;
+pub struct BitFieldParser {
+    file: String,
+    row_parser: Arc<RowParser>
 }
+impl BitFieldParser {
+    fn get_parser_1(input: &str) -> ParserFnReturn {
+        let mut parser = (
+            take(6usize),
+            preceded(space1, take(96usize))
+        );
+        let (i2, data) = parser.parse(input)?;
+        Ok((i2, vec![data.0, data.1]))
+    }
+    pub fn new() -> Self {
+        Self {
+            file: "BITFELD".to_string(),
+            row_parser: Arc::new(RowParser::new(vec![
+                RowDefinition::new(
+                    0,
+                    vec![
+                        ColumnDefinition::new(ExpectedType::Integer32),
+                        ColumnDefinition::new(ExpectedType::String),
+                    ],
+                    Self::get_parser_1
+                )
+            ]))
+        }
+    }
 
-fn bitfield_row_converter(parser: FileParser) -> Result<FxHashMap<i32, BitField>, Box<dyn Error>> {
-    let data = parser
-        .parse()
-        .map(|x| x.and_then(|(_, _, values)| create_instance(values)))
-        .collect::<Result<Vec<_>, _>>()?;
-    let data = BitField::vec_to_map(data);
-    Ok(data)
+    fn row_converter(&self, parser: FileParser) -> Result<FxHashMap<i32, BitField>, Box<dyn Error>> {
+        let data = parser
+            .parse()
+            .map(|x| x.and_then(|(_, _, values)| self.create_instance(values)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let data = BitField::vec_to_map(data);
+        Ok(data)
+    }
+
+    fn parse(&self, path: &str) -> Result<ResourceStorage<BitField>, Box<dyn Error>> {
+        log::info!("Parsing {}...", self.file);
+        let parser = FileParser::new(&format!("{}/{}", path, self.file), Arc::clone(&self.row_parser))?;
+        let data = self.row_converter(parser)?;
+        Ok(ResourceStorage::new(data))
+    }
+
+    fn create_instance(&self, values: Vec<ParsedValue>) -> Result<BitField, Box<dyn Error>> {
+        let (id, hex_number) = row_from_parsed_values(values);
+        let bits = convert_hex_number_to_bits(hex_number)?;
+        Ok(BitField::new(id, bits))
+    }
 }
 
 pub fn parse(path: &str) -> Result<ResourceStorage<BitField>, Box<dyn Error>> {
-    log::info!("Parsing BITFELD...");
-    #[rustfmt::skip]
-    let row_parser = bitfield_row_parser();
-    let parser = FileParser::new(&format!("{path}/BITFELD"), row_parser)?;
-
-    let data = bitfield_row_converter(parser)?;
-
-    Ok(ResourceStorage::new(data))
+    BitFieldParser::new().parse(path)
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -72,14 +103,6 @@ fn row_from_parsed_values(mut values: Vec<ParsedValue>) -> (i32, String) {
     let id: i32 = values.remove(0).into();
     let hex_number: String = values.remove(0).into();
     (id, hex_number)
-}
-
-fn create_instance(values: Vec<ParsedValue>) -> Result<BitField, Box<dyn Error>> {
-    let (id, hex_number) = row_from_parsed_values(values);
-
-    let bits = convert_hex_number_to_bits(hex_number)?;
-
-    Ok(BitField::new(id, bits))
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -116,8 +139,9 @@ mod tests {
             "000017 FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF0000".to_string(),
             "425152 FFFFFFFFEFFFFFFFFFFBF7EBD7BF5FFFBFFFFFFFEFBFDFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF0000".to_string()
         ];
+        let bitfield_parser = BitFieldParser::new();
         let parser = FileParser {
-            row_parser: bitfield_row_parser(),
+            row_parser: bitfield_parser.row_parser.clone(),
             rows,
         };
         let mut parser_iterator = parser.parse();
@@ -143,11 +167,12 @@ mod tests {
             "000017 FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF0000".to_string(),
             "425152 FFFFFFFFEFFFFFFFFFFBF7EBD7BF5FFFBFFFFFFFEFBFDFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF0000".to_string()
         ];
+        let bitfield_parser = BitFieldParser::new();
         let parser = FileParser {
-            row_parser: bitfield_row_parser(),
+            row_parser: bitfield_parser.row_parser.clone(),
             rows,
         };
-        let data = bitfield_row_converter(parser).unwrap();
+        let data = bitfield_parser.row_converter(parser).unwrap();
         // First row (id: 1)
         let attribute = data.get(&17).unwrap();
         let reference = r#"

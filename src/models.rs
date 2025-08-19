@@ -447,10 +447,10 @@ impl ExchangeTimeLine {
 // --- InformationText
 // ------------------------------------------------------------------------------------------------
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InformationText {
     id: i32,
-    content: FxHashMap<Language, String>,
+    pub(crate) content: FxHashMap<Language, String>,
 }
 
 impl_Model!(InformationText);

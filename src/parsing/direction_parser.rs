@@ -12,48 +12,95 @@
 /// File(s) read by the parser:
 /// RICHTUNG
 use std::error::Error;
-
+use std::sync::Arc;
+use nom::{
+    {Parser},
+    bytes::complete::take,
+    character::complete::space1,
+    combinator::rest,
+    sequence::preceded,
+};
 use rustc_hash::FxHashMap;
-
 use crate::{
     models::{Direction, Model},
     parsing::{ColumnDefinition, ExpectedType, FileParser, ParsedValue, RowDefinition, RowParser},
     storage::ResourceStorage,
 };
+use crate::parsing::{ParserFnReturn};
 
 type DirectionAndTypeConverter = (ResourceStorage<Direction>, FxHashMap<String, i32>);
 type FxHashMapsAndTypeConverter = (FxHashMap<i32, Direction>, FxHashMap<String, i32>);
 
-fn direction_row_parser() -> RowParser {
-    RowParser::new(vec![
-        // This row is used to create a Direction instance.
-        RowDefinition::from(vec![
-            ColumnDefinition::new(1, 7, ExpectedType::String),
-            ColumnDefinition::new(9, -1, ExpectedType::String),
-        ]),
-    ])
+pub struct DirectionParser {
+    file: String,
+    row_parser: Arc<RowParser>
 }
-fn direction_row_converter(
-    parser: FileParser,
-) -> Result<FxHashMapsAndTypeConverter, Box<dyn Error>> {
-    let mut pk_type_converter = FxHashMap::default();
 
-    let data = parser
-        .parse()
-        .map(|x| x.and_then(|(_, _, values)| create_instance(values, &mut pk_type_converter)))
-        .collect::<Result<Vec<_>, _>>()?;
-    let data = Direction::vec_to_map(data);
-    Ok((data, pk_type_converter))
+impl DirectionParser {
+    fn get_parser_1(input: &str) -> ParserFnReturn {
+        let mut parser = (
+            take(7usize),
+            preceded(space1, rest)
+        );
+        let (i2, data) = parser.parse(input)?;
+        Ok((i2, vec![data.0, data.1]))
+    }
+    pub fn new() -> Self {
+        Self {
+            file: "RICHTUNG".to_string(),
+            row_parser: Arc::new(RowParser::new(vec![
+                RowDefinition::new(
+                    0,
+                    vec![
+                        ColumnDefinition::new(ExpectedType::String),
+                        ColumnDefinition::new(ExpectedType::String),
+                    ],
+                    Self::get_parser_1
+                )
+            ]))
+        }
+    }
+
+    fn parse(&self, path: &str) -> Result<DirectionAndTypeConverter, Box<dyn Error>> {
+        log::info!("Parsing {}...", self.file);
+        let parser = FileParser::new(&format!("{}/{}", path, self.file), Arc::clone(&self.row_parser))?;
+        let (data, pk_type_converter) = self.row_converter(parser)?;
+        Ok((ResourceStorage::new(data), pk_type_converter))
+    }
+
+    pub fn row_converter(
+        &self,
+        parser: FileParser,
+    ) -> Result<FxHashMapsAndTypeConverter, Box<dyn Error>> {
+        let mut pk_type_converter = FxHashMap::default();
+
+        let data = parser
+            .parse()
+            .map(|x| x.and_then(|(_, _, values)| self.create_instance(values, &mut pk_type_converter)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let data = Direction::vec_to_map(data);
+        Ok((data, pk_type_converter))
+    }
+
+    fn create_instance(
+        &self,
+        values: Vec<ParsedValue>,
+        pk_type_converter: &mut FxHashMap<String, i32>,
+    ) -> Result<Direction, Box<dyn Error>> {
+        let (legacy_id, name) = row_from_parsed_values(values);
+        let id = remove_first_char(&legacy_id).parse::<i32>()?;
+
+        if let Some(previous) = pk_type_converter.insert(legacy_id.clone(), id) {
+            log::warn!(
+                "Warning: previous id {previous} for {legacy_id}. The legacy_id, {legacy_id} is not unique."
+            );
+        }
+        Ok(Direction::new(id, name))
+    }
 }
 
 pub fn parse(path: &str) -> Result<DirectionAndTypeConverter, Box<dyn Error>> {
-    log::info!("Parsing RICHTUNG...");
-    let row_parser = direction_row_parser();
-    let parser = FileParser::new(&format!("{path}/RICHTUNG"), row_parser)?;
-
-    let (data, pk_type_converter) = direction_row_converter(parser)?;
-
-    Ok((ResourceStorage::new(data), pk_type_converter))
+    DirectionParser::new().parse(path)
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -66,28 +113,15 @@ fn row_from_parsed_values(mut values: Vec<ParsedValue>) -> (String, String) {
     (legacy_id, name)
 }
 
-fn create_instance(
-    values: Vec<ParsedValue>,
-    pk_type_converter: &mut FxHashMap<String, i32>,
-) -> Result<Direction, Box<dyn Error>> {
-    let (legacy_id, name) = row_from_parsed_values(values);
-
-    let id = remove_first_char(&legacy_id).parse::<i32>()?;
-
-    if let Some(previous) = pk_type_converter.insert(legacy_id.clone(), id) {
-        log::warn!(
-            "Warning: previous id {previous} for {legacy_id}. The legacy_id, {legacy_id} is not unique."
-        );
-    }
-    Ok(Direction::new(id, name))
-}
-
 // ------------------------------------------------------------------------------------------------
 // --- Helper Functions
 // ------------------------------------------------------------------------------------------------
 
-// TODO: handle the empty string case
 fn remove_first_char(value: &str) -> &str {
+    if value.is_empty() {
+        return value;
+    }
+
     let mut chars = value.chars();
     chars.next();
     chars.as_str()
@@ -107,8 +141,9 @@ mod tests {
             "R000192 Saas-Fee, Parkhaus".to_string(),
             "R002609 Hégenheim - Collège des Trois Pays".to_string(),
         ];
+        let direction_parser = DirectionParser::new();
         let parser = FileParser {
-            row_parser: direction_row_parser(),
+            row_parser: direction_parser.row_parser.clone(),
             rows,
         };
         let mut parser_iterator = parser.parse();
@@ -133,11 +168,12 @@ mod tests {
             "R000192 Saas-Fee, Parkhaus".to_string(),
             "R002609 Hégenheim - Collège des Trois Pays".to_string(),
         ];
+        let direction_parser = DirectionParser::new();
         let parser = FileParser {
-            row_parser: direction_row_parser(),
+            row_parser: direction_parser.row_parser.clone(),
             rows,
         };
-        let (data, pk_type_converter) = direction_row_converter(parser).unwrap();
+        let (data, pk_type_converter) = direction_parser.row_converter(parser).unwrap();
         assert_eq!(*pk_type_converter.get("R000008").unwrap(), 8);
         assert_eq!(*pk_type_converter.get("R000192").unwrap(), 192);
         assert_eq!(*pk_type_converter.get("R002609").unwrap(), 2609);

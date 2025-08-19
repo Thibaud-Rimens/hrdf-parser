@@ -4,132 +4,413 @@
 // ---
 // Note: this parser collects both the Platform and JourneyPlatform resources.
 use std::error::Error;
-
+use std::sync::Arc;
+use nom::bytes::complete::{tag, take};
+use nom::character::complete::space1;
+use nom::combinator::{opt, rest};
+use nom::Parser;
+use nom::sequence::preceded;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::{
-    JourneyId, Version,
-    models::{CoordinateSystem, Coordinates, JourneyPlatform, Model, Platform},
-    parsing::{
-        ColumnDefinition, ExpectedType, FastRowMatcher, FileParser, ParsedValue, RowDefinition,
-        RowParser,
-    },
-    storage::ResourceStorage,
-    utils::{AutoIncrement, create_time_from_value},
-};
+use crate::{JourneyId, Version, models::{CoordinateSystem, Coordinates, JourneyPlatform, Model, Platform}, parsing::{
+    ColumnDefinition, ExpectedType, FileParser, ParsedValue, RowDefinition,
+    RowParser,
+}, storage::ResourceStorage, utils::{AutoIncrement, create_time_from_value}};
 
-const ROW_JOURNEY_PLATFORM: i32 = 1;
-const ROW_PLATFORM: i32 = 2;
-const ROW_SECTION: i32 = 3;
-const ROW_SLOID: i32 = 4;
-const ROW_COORD: i32 = 5;
+use crate::parsing::ParserFnReturn;
 
-fn construct_row_parser(version: Version) -> RowParser {
-    match version {
-        Version::V_5_40_41_2_0_7 => {
-            RowParser::new(vec![
-                // This row is used to create a JourneyPlatform instance.
-                RowDefinition::new(
-                    ROW_JOURNEY_PLATFORM,
-                    Box::new(FastRowMatcher::new(23, 1, "#", true)),
+enum RowType {
+    RowJourneyPlatform = 1,
+    RowPlatform = 2,
+    RowSection = 3,
+    RowSloid = 4,
+    RowCoord = 5,
+}
+
+impl TryFrom<i32> for RowType {
+    type Error = ();
+    fn try_from(v: i32) -> Result<Self, Self::Error> {
+        match v {
+            x if x == RowType::RowJourneyPlatform as i32 => Ok(RowType::RowJourneyPlatform),
+            x if x == RowType::RowPlatform as i32 => Ok(RowType::RowPlatform),
+            x if x == RowType::RowSection as i32 => Ok(RowType::RowSection),
+            x if x == RowType::RowSloid as i32 => Ok(RowType::RowSloid),
+            x if x == RowType::RowCoord as i32 => Ok(RowType::RowCoord),
+
+            _ => Err(()),
+        }
+    }
+}
+
+pub struct PlatformParser {
+    files: Vec<String>,
+    row_parser: Arc<RowParser>
+}
+
+impl PlatformParser {
+    fn get_parser_1(input: &str) -> ParserFnReturn {
+        let mut parser = (
+            take(7usize),
+            preceded(space1, take(6usize)),
+            preceded(space1, take(6usize)),
+            preceded(tag("#"), take(7usize)),
+            preceded(space1, opt(take(4usize))),
+            preceded(space1, opt(take(6usize)))
+        );
+        let (i2, data) = parser.parse(input)?;
+        Ok((i2, vec![data.0, data.1, data.2, data.3, data.4.unwrap_or(""), data.5.unwrap_or("")]))
+    }
+
+    fn get_parser_2(input: &str) -> ParserFnReturn {
+        let mut parser = (
+            take(7usize),
+            preceded(tag("#"), take(7usize)),
+            preceded(tag("G"), preceded(space1, take(6usize))),
+        );
+        let (i2, data) = parser.parse(input)?;
+        Ok((i2, vec![data.0, data.1, data.2]))
+    }
+
+    fn get_parser_3(input: &str) -> ParserFnReturn {
+        let mut parser = (
+            take(7usize),
+            preceded(tag("#"), take(7usize)),
+            preceded(tag("A"), preceded(space1, take(6usize))),
+        );
+        let (i2, data) = parser.parse(input)?;
+        Ok((i2, vec![data.0, data.1, data.2]))
+    }
+
+    fn get_parser_4_1(input: &str) -> ParserFnReturn {
+        let mut parser = (
+            take(7usize),
+            preceded(tag("#"), take(7usize)),
+            preceded(tag("g A"), preceded(space1, take(6usize))),
+        );
+        let (i2, data) = parser.parse(input)?;
+        Ok((i2, vec![data.0, data.1, data.2]))
+    }
+
+    fn get_parser_4_2(input: &str) -> ParserFnReturn {
+        let mut parser = (
+            take(7usize),
+            preceded(tag("#"), take(7usize)),
+            preceded(tag("I A"), preceded(space1, take(6usize))),
+        );
+        let (i2, data) = parser.parse(input)?;
+        Ok((i2, vec![data.0, data.1, data.2]))
+    }
+
+    fn get_parser_5_1(input: &str) -> ParserFnReturn {
+        let mut parser = (
+            take(7usize),
+            preceded(tag("#"), take(7usize)),
+            preceded(tag("k"), preceded(space1, take(6usize))),
+        );
+        let (i2, data) = parser.parse(input)?;
+        Ok((i2, vec![data.0, data.1, data.2]))
+    }
+
+    fn get_parser_5_2(input: &str) -> ParserFnReturn {
+        let mut parser = (
+            take(7usize),
+            preceded(tag("#"), take(7usize)),
+            preceded(tag("K"), preceded(space1, take(6usize))),
+        );
+        let (i2, data) = parser.parse(input)?;
+        Ok((i2, vec![data.0, data.1, data.2]))
+    }
+
+    pub fn new(version: Version) -> Self {
+        Self {
+            // Those are not all files but has not enough time updating my structure to handle name and files
+            files: vec!["GLEIS".to_string(), "GLEIS_LV95".to_string(), "GLEIS_WGS".to_string(), "GLEISE_LV95".to_string(), "GLEISE_WGS".to_string()],
+            row_parser: Arc::new(RowParser::new({
+                let mut rows: Vec<RowDefinition> = vec![];
+                rows.push(RowDefinition::new(
+                    RowType::RowJourneyPlatform as i32,
                     vec![
-                        ColumnDefinition::new(1, 7, ExpectedType::Integer32),
-                        ColumnDefinition::new(9, 14, ExpectedType::Integer32),
-                        ColumnDefinition::new(16, 21, ExpectedType::String),
-                        ColumnDefinition::new(24, 30, ExpectedType::Integer32), // Should be 23-30, but here the # character is ignored.
-                        ColumnDefinition::new(32, 35, ExpectedType::OptionInteger32),
-                        ColumnDefinition::new(37, 42, ExpectedType::OptionInteger32),
+                        ColumnDefinition::new(ExpectedType::Integer32),
+                        ColumnDefinition::new(ExpectedType::Integer32),
+                        ColumnDefinition::new(ExpectedType::String),
+                        ColumnDefinition::new(ExpectedType::Integer32), // Should be 23-30, but here the # character is ignored.
+                        ColumnDefinition::new(ExpectedType::OptionInteger32),
+                        ColumnDefinition::new(ExpectedType::OptionInteger32),
                     ],
-                ),
-                // This row is used to create a Platform instance.
-                RowDefinition::new(
-                    ROW_PLATFORM,
-                    Box::new(FastRowMatcher::new(18, 1, "G", true)),
+                    Self::get_parser_1
+                ));
+                rows.push(RowDefinition::new(
+                    RowType::RowPlatform as i32,
                     vec![
-                        ColumnDefinition::new(1, 7, ExpectedType::Integer32),
-                        ColumnDefinition::new(10, 16, ExpectedType::Integer32), // Should be 9-16, but here the # character is ignored.
-                        ColumnDefinition::new(18, -1, ExpectedType::String),
+                        ColumnDefinition::new(ExpectedType::Integer32),
+                        ColumnDefinition::new(ExpectedType::Integer32), // Should be 9-16, but here the # character is ignored.
+                        ColumnDefinition::new(ExpectedType::String),
                     ],
-                ),
-                // This row is used to give set the Section
-                RowDefinition::new(
-                    ROW_SECTION,
-                    Box::new(FastRowMatcher::new(18, 1, "A", true)),
-                    vec![
-                        ColumnDefinition::new(1, 7, ExpectedType::Integer32),
-                        ColumnDefinition::new(10, 16, ExpectedType::Integer32), // Should be 9-16, but here the # character is ignored.
-                        ColumnDefinition::new(18, -1, ExpectedType::String),
-                    ],
-                ),
+                    Self::get_parser_2
+                ));
+                if version == Version::V_5_40_41_2_0_7 {
+                    // This row is used to give set the Section
+                    rows.push(RowDefinition::new(
+                        RowType::RowSection as i32,
+                        vec![
+                            ColumnDefinition::new(ExpectedType::Integer32),
+                            ColumnDefinition::new(ExpectedType::Integer32), // Should be 9-16, but here the # character is ignored.
+                            ColumnDefinition::new(ExpectedType::String),
+                        ],
+                        Self::get_parser_3
+                    ));
+                }
                 // This row is used to set the sloid
-                RowDefinition::new(
-                    ROW_SLOID,
-                    Box::new(FastRowMatcher::new(18, 3, "g A", true)),
+                rows.push(RowDefinition::new(
+                    RowType::RowSloid as i32,
                     vec![
-                        ColumnDefinition::new(1, 7, ExpectedType::Integer32),
-                        ColumnDefinition::new(10, 16, ExpectedType::Integer32), // Should be 9-16, but here the # character is ignored.
-                        ColumnDefinition::new(20, -1, ExpectedType::String),
+                        ColumnDefinition::new(ExpectedType::Integer32),
+                        ColumnDefinition::new(ExpectedType::Integer32), // Should be 9-16, but here the # character is ignored.
+                        ColumnDefinition::new(ExpectedType::String),
                     ],
-                ),
+                    match version {
+                        Version::V_5_40_41_2_0_7 => {
+                            Self::get_parser_4_1
+                        },
+                        Version::V_5_40_41_2_0_4 | Version::V_5_40_41_2_0_5 | Version::V_5_40_41_2_0_6 => {
+                            Self::get_parser_4_2
+                        }
+                    }
+                ));
                 // This row is used to set the coordinates (either lv95 either wgs84)
-                RowDefinition::new(
-                    ROW_COORD,
-                    Box::new(FastRowMatcher::new(18, 1, "k", true)),
+                rows.push(RowDefinition::new(
+                    RowType::RowCoord as i32,
                     vec![
-                        ColumnDefinition::new(1, 7, ExpectedType::Integer32),
-                        ColumnDefinition::new(10, 16, ExpectedType::Integer32), // Should be 9-16, but here the # character is ignored.
-                        ColumnDefinition::new(20, -1, ExpectedType::String),
+                        ColumnDefinition::new(ExpectedType::Integer32),
+                        ColumnDefinition::new(ExpectedType::Integer32), // Should be 9-16, but here the # character is ignored.
+                        ColumnDefinition::new(ExpectedType::String),
                     ],
-                ),
-            ])
+                    match version {
+                        Version::V_5_40_41_2_0_7 => {
+                            Self::get_parser_5_1
+                        },
+                        Version::V_5_40_41_2_0_4 | Version::V_5_40_41_2_0_5 | Version::V_5_40_41_2_0_6 => {
+                            Self::get_parser_5_2
+                        }
+                    }
+                ));
+                rows
+            }))
         }
-        Version::V_5_40_41_2_0_4 | Version::V_5_40_41_2_0_5 | Version::V_5_40_41_2_0_6 => {
-            RowParser::new(vec![
-                // This row is used to create a JourneyPlatform instance.
-                RowDefinition::new(
-                    ROW_JOURNEY_PLATFORM,
-                    Box::new(FastRowMatcher::new(23, 1, "#", true)),
-                    vec![
-                        ColumnDefinition::new(1, 7, ExpectedType::Integer32),
-                        ColumnDefinition::new(9, 14, ExpectedType::Integer32),
-                        ColumnDefinition::new(16, 21, ExpectedType::String),
-                        ColumnDefinition::new(24, 30, ExpectedType::Integer32), // Should be 23-30, but here the # character is ignored.
-                        ColumnDefinition::new(32, 35, ExpectedType::OptionInteger32),
-                        ColumnDefinition::new(37, 42, ExpectedType::OptionInteger32),
-                    ],
-                ),
-                // This row is used to create a Platform instance.
-                RowDefinition::new(
-                    ROW_PLATFORM,
-                    Box::new(FastRowMatcher::new(18, 1, "G", true)),
-                    vec![
-                        ColumnDefinition::new(1, 7, ExpectedType::Integer32),
-                        ColumnDefinition::new(10, 16, ExpectedType::Integer32), // Should be 9-16, but here the # character is ignored.
-                        ColumnDefinition::new(18, -1, ExpectedType::String),
-                    ],
-                ),
-                // This row contains the SLOID.
-                RowDefinition::new(
-                    ROW_SLOID,
-                    Box::new(FastRowMatcher::new(18, 3, "I A", true)),
-                    vec![
-                        ColumnDefinition::new(1, 7, ExpectedType::Integer32),
-                        ColumnDefinition::new(10, 16, ExpectedType::Integer32), // Should be 9-16, but here the # character is ignored.
-                        ColumnDefinition::new(22, -1, ExpectedType::String), // This column has not been explicitly defined in the SBB specification.
-                    ],
-                ),
-                // This row contains the LV95/WGS84 coordinates.
-                RowDefinition::new(
-                    ROW_COORD,
-                    Box::new(FastRowMatcher::new(18, 1, "K", true)),
-                    vec![
-                        ColumnDefinition::new(1, 7, ExpectedType::Integer32),
-                        ColumnDefinition::new(10, 16, ExpectedType::Integer32), // Should be 9-16, but here the # character is ignored.
-                        ColumnDefinition::new(20, -1, ExpectedType::String), // This column has not been explicitly defined in the SBB specification.
-                    ],
-                ),
-            ])
+    }
+
+    pub fn parse(
+        &self,
+        version: Version,
+        path: &str,
+        journeys_pk_type_converter: &FxHashSet<JourneyId>,
+    ) -> Result<(ResourceStorage<JourneyPlatform>, ResourceStorage<Platform>), Box<dyn Error>> {
+        log::info!("Parsing {}...", self.files[0]);
+        let auto_increment = AutoIncrement::new();
+        let mut platforms = Vec::new();
+        let mut platforms_pk_type_converter = FxHashMap::default();
+
+        let mut bytes_offset = 0;
+        let mut journey_platform = Vec::new();
+
+        match version {
+            Version::V_5_40_41_2_0_4 | Version::V_5_40_41_2_0_5 | Version::V_5_40_41_2_0_6 => {
+                let parser = FileParser::new(&format!("{path}/{}", self.files[0]), Arc::clone(&self.row_parser))?;
+                for x in parser.parse() {
+                    let (id, bytes_read, values) = x?;
+                    match id.try_into() {
+                        Ok(RowType::RowJourneyPlatform) => {
+                            bytes_offset += bytes_read;
+                            journey_platform.push(values);
+                        }
+                        Ok(RowType::RowPlatform) => {
+                            platforms.push(Self::create_instance(
+                                values,
+                                &auto_increment,
+                                &mut platforms_pk_type_converter,
+                            )?);
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
+            Version::V_5_40_41_2_0_7 => {
+                let parser = FileParser::new(&format!("{path}/{}", self.files[3]), Arc::clone(&self.row_parser))?;
+                for x in parser.parse() {
+                    let (id, bytes_read, values) = x?;
+                    match id.try_into() {
+                        Ok(RowType::RowJourneyPlatform)  => {
+                            bytes_offset += bytes_read;
+                            journey_platform.push(values);
+                        }
+                        Ok(RowType::RowPlatform)  => {
+                            platforms.push(Self::create_instance(
+                                values,
+                                &auto_increment,
+                                &mut platforms_pk_type_converter,
+                            )?);
+                        }
+                        Ok(RowType::RowSection)  => {
+                            // We do nothing
+                            // We may want to use section at some point
+                        }
+                        Ok(RowType::RowSloid) | Ok(RowType::RowCoord)  => {
+                            // We do nothing, coordinates and sloid are parsed afterwards
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
         }
+
+        let mut platforms = Platform::vec_to_map(platforms);
+
+        let journey_platform = journey_platform
+            .into_iter()
+            .map(|values| {
+                Self::create_journey_instance(
+                    values,
+                    journeys_pk_type_converter,
+                    &platforms_pk_type_converter,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let journey_platform = JourneyPlatform::vec_to_map(journey_platform);
+
+        log::info!("Parsing {}...", self.files[1]);
+        #[rustfmt::skip]
+        self.load_coordinates_for_platforms(version, path, CoordinateSystem::LV95, bytes_offset, &platforms_pk_type_converter, &mut platforms)?;
+        log::info!("Parsing {}84...", self.files[2]);
+        #[rustfmt::skip]
+        self.load_coordinates_for_platforms(version, path, CoordinateSystem::WGS84, bytes_offset, &platforms_pk_type_converter, &mut platforms)?;
+
+        Ok((
+            ResourceStorage::new(journey_platform),
+            ResourceStorage::new(platforms),
+        ))
+    }
+
+    fn load_coordinates_for_platforms(
+        &self,
+        version: Version,
+        path: &str,
+        coordinate_system: CoordinateSystem,
+        bytes_offset: u64,
+        pk_type_converter: &FxHashMap<(i32, i32), i32>,
+        data: &mut FxHashMap<i32, Platform>,
+    ) -> Result<(), Box<dyn Error>> {
+        let row_parser = self.row_parser.clone();
+        let filename = match (version, coordinate_system) {
+            (
+                Version::V_5_40_41_2_0_4 | Version::V_5_40_41_2_0_5 | Version::V_5_40_41_2_0_6,
+                CoordinateSystem::LV95,
+            ) => self.files[1].clone(),
+            (
+                Version::V_5_40_41_2_0_4 | Version::V_5_40_41_2_0_5 | Version::V_5_40_41_2_0_6,
+                CoordinateSystem::WGS84,
+            ) => self.files[2].clone(),
+            (Version::V_5_40_41_2_0_7, CoordinateSystem::LV95) => self.files[3].clone(),
+            (Version::V_5_40_41_2_0_7, CoordinateSystem::WGS84) => self.files[4].clone(),
+        };
+        let parser =
+            FileParser::new_with_bytes_offset(&format!("{path}/{filename}"), row_parser, bytes_offset)?;
+
+        match version {
+            Version::V_5_40_41_2_0_4 | Version::V_5_40_41_2_0_5 | Version::V_5_40_41_2_0_6 => {
+                parser.parse().try_for_each(|x| {
+                    let (id, _, values) = x?;
+                    match id.try_into() {
+                        Ok(RowType::RowJourneyPlatform)  | Ok(RowType::RowPlatform)  => {
+                            // this one has normally already been parsed
+                        }
+                        Ok(RowType::RowSloid)  => {
+                            platform_set_sloid(values, coordinate_system, pk_type_converter, data)?
+                        }
+                        Ok(RowType::RowCoord)  => platform_set_coordinates(
+                            values,
+                            coordinate_system,
+                            pk_type_converter,
+                            data,
+                        )?,
+                        _ => unreachable!(),
+                    }
+                    Ok(())
+                })
+            }
+            Version::V_5_40_41_2_0_7 => {
+                parser.parse().try_for_each(|x| {
+                    let (id, _, values) = x?;
+                    match id.try_into() {
+                        Ok(RowType::RowJourneyPlatform) | Ok(RowType::RowPlatform) | Ok(RowType::RowSection)  => {
+                            // This should already have been treated
+                        }
+                        Ok(RowType::RowSloid)  => {
+                            platform_set_sloid(values, coordinate_system, pk_type_converter, data)?
+                        }
+                        Ok(RowType::RowCoord)  => platform_set_coordinates(
+                            values,
+                            coordinate_system,
+                            pk_type_converter,
+                            data,
+                        )?,
+                        _ => unreachable!(),
+                    }
+                    Ok(())
+                })
+            }
+        }
+    }
+
+    fn create_instance(
+        mut values: Vec<ParsedValue>,
+        auto_increment: &AutoIncrement,
+        platforms_pk_type_converter: &mut FxHashMap<(i32, i32), i32>,
+    ) -> Result<Platform, Box<dyn Error>> {
+        let stop_id: i32 = values.remove(0).into();
+        let index: i32 = values.remove(0).into();
+        let platform_data: String = values.remove(0).into();
+
+        let id = auto_increment.next();
+        let (code, sectors) = parse_platform_data(platform_data)?;
+
+        if let Some(previous) = platforms_pk_type_converter.insert((stop_id, index), id) {
+            log::warn!(
+            "Warning: previous id {previous} for ({stop_id}, {index}). The pair (stop_id, index), ({stop_id}, {index}), is not unique."
+        );
+        };
+
+        Ok(Platform::new(id, code, sectors, stop_id))
+    }
+
+    fn create_journey_instance(
+        mut values: Vec<ParsedValue>,
+        journeys_pk_type_converter: &FxHashSet<JourneyId>,
+        platforms_pk_type_converter: &FxHashMap<(i32, i32), i32>,
+    ) -> Result<JourneyPlatform, Box<dyn Error>> {
+        let stop_id: i32 = values.remove(0).into();
+        let journey_id: i32 = values.remove(0).into();
+        let administration: String = values.remove(0).into();
+        let index: i32 = values.remove(0).into();
+        let time: Option<i32> = values.remove(0).into();
+        let bit_field_id: Option<i32> = values.remove(0).into();
+
+        let _journey_id = journeys_pk_type_converter
+            .get(&(journey_id, administration.clone()))
+            .ok_or("Unknown legacy journey ID")?;
+
+        let platform_id = *platforms_pk_type_converter
+            .get(&(stop_id, index))
+            .ok_or("Unknown legacy platform ID")?;
+
+        let time = time.map(|x| create_time_from_value(x as u32));
+
+        Ok(JourneyPlatform::new(
+            journey_id,
+            administration,
+            platform_id,
+            time,
+            bit_field_id,
+        ))
     }
 }
 
@@ -138,218 +419,12 @@ pub fn parse(
     path: &str,
     journeys_pk_type_converter: &FxHashSet<JourneyId>,
 ) -> Result<(ResourceStorage<JourneyPlatform>, ResourceStorage<Platform>), Box<dyn Error>> {
-    log::info!("Parsing GLEIS...");
-    let row_parser = construct_row_parser(version);
-
-    let auto_increment = AutoIncrement::new();
-    let mut platforms = Vec::new();
-    let mut platforms_pk_type_converter = FxHashMap::default();
-
-    let mut bytes_offset = 0;
-    let mut journey_platform = Vec::new();
-
-    match version {
-        Version::V_5_40_41_2_0_4 | Version::V_5_40_41_2_0_5 | Version::V_5_40_41_2_0_6 => {
-            let parser = FileParser::new(&format!("{path}/GLEIS"), row_parser)?;
-            for x in parser.parse() {
-                let (id, bytes_read, values) = x?;
-                match id {
-                    ROW_JOURNEY_PLATFORM => {
-                        bytes_offset += bytes_read;
-                        journey_platform.push(values);
-                    }
-                    ROW_PLATFORM => {
-                        platforms.push(create_platform(
-                            values,
-                            &auto_increment,
-                            &mut platforms_pk_type_converter,
-                        )?);
-                    }
-                    _ => unreachable!(),
-                }
-            }
-        }
-        Version::V_5_40_41_2_0_7 => {
-            let parser = FileParser::new(&format!("{path}/GLEISE_LV95"), row_parser)?;
-            for x in parser.parse() {
-                let (id, bytes_read, values) = x?;
-                match id {
-                    ROW_JOURNEY_PLATFORM => {
-                        bytes_offset += bytes_read;
-                        journey_platform.push(values);
-                    }
-                    ROW_PLATFORM => {
-                        platforms.push(create_platform(
-                            values,
-                            &auto_increment,
-                            &mut platforms_pk_type_converter,
-                        )?);
-                    }
-                    ROW_SECTION => {
-                        // We do nothing
-                        // We may want to use section at some point
-                    }
-                    ROW_SLOID | ROW_COORD => {
-                        // We do nothing, coordinates and sloid are parsed afterwards
-                    }
-                    _ => unreachable!(),
-                }
-            }
-        }
-    }
-
-    let mut platforms = Platform::vec_to_map(platforms);
-
-    let journey_platform = journey_platform
-        .into_iter()
-        .map(|values| {
-            create_journey_platform(
-                values,
-                journeys_pk_type_converter,
-                &platforms_pk_type_converter,
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let journey_platform = JourneyPlatform::vec_to_map(journey_platform);
-
-    log::info!("Parsing GLEIS_LV95...");
-    #[rustfmt::skip]
-    load_coordinates_for_platforms(version, path, CoordinateSystem::LV95, bytes_offset, &platforms_pk_type_converter, &mut platforms)?;
-    log::info!("Parsing GLEIS_WGS84...");
-    #[rustfmt::skip]
-    load_coordinates_for_platforms(version, path, CoordinateSystem::WGS84, bytes_offset, &platforms_pk_type_converter, &mut platforms)?;
-
-    Ok((
-        ResourceStorage::new(journey_platform),
-        ResourceStorage::new(platforms),
-    ))
-}
-
-fn load_coordinates_for_platforms(
-    version: Version,
-    path: &str,
-    coordinate_system: CoordinateSystem,
-    bytes_offset: u64,
-    pk_type_converter: &FxHashMap<(i32, i32), i32>,
-    data: &mut FxHashMap<i32, Platform>,
-) -> Result<(), Box<dyn Error>> {
-    let row_parser = construct_row_parser(version);
-    let filename = match (version, coordinate_system) {
-        (
-            Version::V_5_40_41_2_0_4 | Version::V_5_40_41_2_0_5 | Version::V_5_40_41_2_0_6,
-            CoordinateSystem::LV95,
-        ) => "GLEIS_LV95",
-        (
-            Version::V_5_40_41_2_0_4 | Version::V_5_40_41_2_0_5 | Version::V_5_40_41_2_0_6,
-            CoordinateSystem::WGS84,
-        ) => "GLEIS_WGS",
-        (Version::V_5_40_41_2_0_7, CoordinateSystem::LV95) => "GLEISE_LV95",
-        (Version::V_5_40_41_2_0_7, CoordinateSystem::WGS84) => "GLEISE_WGS",
-    };
-    let parser =
-        FileParser::new_with_bytes_offset(&format!("{path}/{filename}"), row_parser, bytes_offset)?;
-
-    match version {
-        Version::V_5_40_41_2_0_4 | Version::V_5_40_41_2_0_5 | Version::V_5_40_41_2_0_6 => {
-            parser.parse().try_for_each(|x| {
-                let (id, _, values) = x?;
-                match id {
-                    ROW_JOURNEY_PLATFORM | ROW_PLATFORM => {
-                        // this one has normally already been parsed
-                    }
-                    ROW_SLOID => {
-                        platform_set_sloid(values, coordinate_system, pk_type_converter, data)?
-                    }
-                    ROW_COORD => platform_set_coordinates(
-                        values,
-                        coordinate_system,
-                        pk_type_converter,
-                        data,
-                    )?,
-                    _ => unreachable!(),
-                }
-                Ok(())
-            })
-        }
-        Version::V_5_40_41_2_0_7 => {
-            parser.parse().try_for_each(|x| {
-                let (id, _, values) = x?;
-                match id {
-                    ROW_JOURNEY_PLATFORM | ROW_PLATFORM | ROW_SECTION => {
-                        // This should already have been treated
-                    }
-                    ROW_SLOID => {
-                        platform_set_sloid(values, coordinate_system, pk_type_converter, data)?
-                    }
-                    ROW_COORD => platform_set_coordinates(
-                        values,
-                        coordinate_system,
-                        pk_type_converter,
-                        data,
-                    )?,
-                    _ => unreachable!(),
-                }
-                Ok(())
-            })
-        }
-    }
+    PlatformParser::new(version).parse(version, path, journeys_pk_type_converter)
 }
 
 // ------------------------------------------------------------------------------------------------
 // --- Helper Functions
 // ------------------------------------------------------------------------------------------------
-
-fn create_journey_platform(
-    mut values: Vec<ParsedValue>,
-    journeys_pk_type_converter: &FxHashSet<JourneyId>,
-    platforms_pk_type_converter: &FxHashMap<(i32, i32), i32>,
-) -> Result<JourneyPlatform, Box<dyn Error>> {
-    let stop_id: i32 = values.remove(0).into();
-    let journey_id: i32 = values.remove(0).into();
-    let administration: String = values.remove(0).into();
-    let index: i32 = values.remove(0).into();
-    let time: Option<i32> = values.remove(0).into();
-    let bit_field_id: Option<i32> = values.remove(0).into();
-
-    let _journey_id = journeys_pk_type_converter
-        .get(&(journey_id, administration.clone()))
-        .ok_or("Unknown legacy journey ID")?;
-
-    let platform_id = *platforms_pk_type_converter
-        .get(&(stop_id, index))
-        .ok_or("Unknown legacy platform ID")?;
-
-    let time = time.map(|x| create_time_from_value(x as u32));
-
-    Ok(JourneyPlatform::new(
-        journey_id,
-        administration,
-        platform_id,
-        time,
-        bit_field_id,
-    ))
-}
-
-fn create_platform(
-    mut values: Vec<ParsedValue>,
-    auto_increment: &AutoIncrement,
-    platforms_pk_type_converter: &mut FxHashMap<(i32, i32), i32>,
-) -> Result<Platform, Box<dyn Error>> {
-    let stop_id: i32 = values.remove(0).into();
-    let index: i32 = values.remove(0).into();
-    let platform_data: String = values.remove(0).into();
-
-    let id = auto_increment.next();
-    let (code, sectors) = parse_platform_data(platform_data)?;
-
-    if let Some(previous) = platforms_pk_type_converter.insert((stop_id, index), id) {
-        log::warn!(
-            "Warning: previous id {previous} for ({stop_id}, {index}). The pair (stop_id, index), ({stop_id}, {index}), is not unique."
-        );
-    };
-
-    Ok(Platform::new(id, code, sectors, stop_id))
-}
 
 fn platform_set_sloid(
     mut values: Vec<ParsedValue>,
@@ -408,10 +483,6 @@ fn platform_set_coordinates(
 
     Ok(())
 }
-
-// ------------------------------------------------------------------------------------------------
-// --- Helper Functions
-// ------------------------------------------------------------------------------------------------
 
 fn parse_platform_data(
     mut platform_data: String,
